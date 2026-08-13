@@ -4,8 +4,23 @@
   "private": true,
   "description": "PSV transport-safety reporting bot for WhatsApp",
   "main": "src/index.js",
-  "scripts": { "start": "node src/index.js", "dev": "nodemon src/index.js", "db:seed": "node scripts/seed.js", "test": "node --test" },
-  "engines": { "node": ">=18" },
-  "dependencies": { "@supabase/supabase-js": "^2.43.4", "dotenv": "^16.4.5", "express": "^4.19.2", "twilio": "^5.2.0" },
-  "devDependencies": { "nodemon": "^3.1.0" }
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "db:seed": "node scripts/seed.js",
+    "setup-templates": "node scripts/setupTwilioTemplates.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.43.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "twilio": "^5.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
 }
