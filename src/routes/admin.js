@@ -1,74 +1,1314 @@
-'use strict';
-const express = require('express');
+"use strict";
+const express = require("express");
 const router = express.Router();
-const supabase = require('../db/supabase');
-const { authenticateAdmin, requirePermission } = require('../middleware/adminAuth');
-const { record } = require('../services/auditService');
-const { invalidateSettingsCache } = require('../services/settingsService');
-const { normalisePhone } = require('../utils/helpers');
+const supabase = require("../db/supabase");
+const {
+  authenticateAdmin,
+  requirePermission,
+} = require("../middleware/adminAuth");
+const { record } = require("../services/auditService");
+const { invalidateSettingsCache } = require("../services/settingsService");
+const { normalisePhone } = require("../utils/helpers");
 
 router.use(authenticateAdmin);
-const cleanReport = report => ({ case_id: report.case_id, reported_at: report.reported_at, route_name: report.route_name, direction_of_travel: report.direction_of_travel, plate_number: report.plate_number, vehicle_description: report.vehicle_description, violation_type: report.violation_type, dispatch_target_name: report.dispatch_target_name, dispatched_checkpoint_id: report.dispatched_checkpoint_id, status: report.status, dispatch_priority: report.dispatch_priority, corroborated: report.corroborated, moderation_status: report.moderation_status, flag_reasons: report.flag_reasons, reporter_lat: report.reporter_lat, reporter_lng: report.reporter_lng, predicted_lat: report.predicted_lat, predicted_lng: report.predicted_lng, intercept_lat: report.intercept_lat, intercept_lng: report.intercept_lng, prediction_confidence: report.prediction_confidence, interception_attempts: report.interception_attempts, redispatch_count: report.redispatch_count, officer_action_at: report.officer_action_at });
-const query = table => supabase.from(table).select('*');
+const cleanReport = (report) => ({
+  case_id: report.case_id,
+  reported_at: report.reported_at,
+  route_name: report.route_name,
+  direction_of_travel: report.direction_of_travel,
+  plate_number: report.plate_number,
+  vehicle_description: report.vehicle_description,
+  violation_type: report.violation_type,
+  dispatch_target_name: report.dispatch_target_name,
+  dispatched_checkpoint_id: report.dispatched_checkpoint_id,
+  status: report.status,
+  dispatch_priority: report.dispatch_priority,
+  corroborated: report.corroborated,
+  moderation_status: report.moderation_status,
+  flag_reasons: report.flag_reasons,
+  reporter_lat: report.reporter_lat,
+  reporter_lng: report.reporter_lng,
+  predicted_lat: report.predicted_lat,
+  predicted_lng: report.predicted_lng,
+  intercept_lat: report.intercept_lat,
+  intercept_lng: report.intercept_lng,
+  prediction_confidence: report.prediction_confidence,
+  interception_attempts: report.interception_attempts,
+  redispatch_count: report.redispatch_count,
+  officer_action_at: report.officer_action_at,
+});
+const query = (table) => supabase.from(table).select("*");
+// List endpoints remain backward compatible for map/selector consumers. Supplying
+// page or pageSize opts into a bounded database query with total-count metadata.
+const pageRequest = (queryParams) => {
+  if (queryParams.page === undefined && queryParams.pageSize === undefined)
+    return null;
+  const page = Math.max(1, Number.parseInt(queryParams.page, 10) || 1);
+  const pageSize = Math.min(
+    100,
+    Math.max(10, Number.parseInt(queryParams.pageSize, 10) || 25),
+  );
+  return {
+    page,
+    pageSize,
+    from: (page - 1) * pageSize,
+    to: page * pageSize - 1,
+  };
+};
+const paged = (items, count, request) =>
+  request
+    ? {
+        items: items || [],
+        pagination: {
+          page: request.page,
+          pageSize: request.pageSize,
+          total: count || 0,
+          totalPages: Math.max(1, Math.ceil((count || 0) / request.pageSize)),
+        },
+      }
+    : items || [];
+const pageQuery = (table, request) =>
+  request
+    ? supabase
+        .from(table)
+        .select("*", { count: "exact" })
+        .range(request.from, request.to)
+    : query(table);
 
-router.get('/me', (req, res) => res.json({ id: req.admin.id, name: req.admin.name, email: req.admin.email, role: req.admin.role, stationScope: req.admin.station_scope }));
+router.get("/me", (req, res) =>
+  res.json({
+    id: req.admin.id,
+    name: req.admin.name,
+    email: req.admin.email,
+    role: req.admin.role,
+    stationScope: req.admin.station_scope,
+  }),
+);
 
-router.get('/analytics/overview', requirePermission('dashboard:read'), async (req, res, next) => { try {
-  const start = new Date(); start.setHours(0, 0, 0, 0);
-  const [today, week, active, queue] = await Promise.all([
-    query('reports').gte('reported_at', start.toISOString()), query('reports').gte('reported_at', new Date(Date.now() - 7 * 864e5).toISOString()), query('checkpoints').eq('is_active', true), query('reports').eq('moderation_status', 'flagged')
-  ]);
-  for (const response of [today, week, active, queue]) if (response.error) throw response.error;
-  const todayReports = today.data || []; const successful = todayReports.filter(item => item.dispatched_checkpoint_id).length;
-  const acknowledgements = todayReports.filter(item => item.officer_action_at).map(item => new Date(item.officer_action_at) - new Date(item.reported_at));
-  res.json({ reportsToday: todayReports.length, reportsWeek: (week.data || []).length, dispatchSuccessRate: todayReports.length ? Math.round(successful / todayReports.length * 100) : 0, averageAcknowledgementSeconds: acknowledgements.length ? Math.round(acknowledgements.reduce((a, b) => a + b, 0) / acknowledgements.length / 1000) : null, activeCheckpoints: active.data?.filter(item => (item.duty_officers || []).some(officer => officer.onDuty)).length || 0, totalCheckpoints: active.data?.length || 0, moderationQueue: queue.data?.length || 0, recentReports: todayReports.slice(0, 8).map(cleanReport) });
-} catch (error) { next(error); } });
+router.get(
+  "/analytics/overview",
+  requirePermission("dashboard:read"),
+  async (req, res, next) => {
+    try {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      const [today, week, active, queue] = await Promise.all([
+        query("reports").gte("reported_at", start.toISOString()),
+        query("reports").gte(
+          "reported_at",
+          new Date(Date.now() - 7 * 864e5).toISOString(),
+        ),
+        query("checkpoints").eq("is_active", true),
+        query("reports").eq("moderation_status", "flagged"),
+      ]);
+      for (const response of [today, week, active, queue])
+        if (response.error) throw response.error;
+      const todayReports = today.data || [];
+      const successful = todayReports.filter(
+        (item) => item.dispatched_checkpoint_id,
+      ).length;
+      const acknowledgements = todayReports
+        .filter((item) => item.officer_action_at)
+        .map(
+          (item) =>
+            new Date(item.officer_action_at) - new Date(item.reported_at),
+        );
+      res.json({
+        reportsToday: todayReports.length,
+        reportsWeek: (week.data || []).length,
+        dispatchSuccessRate: todayReports.length
+          ? Math.round((successful / todayReports.length) * 100)
+          : 0,
+        averageAcknowledgementSeconds: acknowledgements.length
+          ? Math.round(
+              acknowledgements.reduce((a, b) => a + b, 0) /
+                acknowledgements.length /
+                1000,
+            )
+          : null,
+        activeCheckpoints:
+          active.data?.filter((item) =>
+            (item.duty_officers || []).some((officer) => officer.onDuty),
+          ).length || 0,
+        totalCheckpoints: active.data?.length || 0,
+        moderationQueue: queue.data?.length || 0,
+        recentReports: todayReports.slice(0, 8).map(cleanReport),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/checkpoints', requirePermission('checkpoints:read'), async (req, res, next) => { try { const { data, error } = await query('checkpoints').order('name'); if (error) throw error; const { data: locations, error: locationError } = await supabase.rpc('admin_checkpoint_locations'); if (locationError) throw locationError; const byId = new Map((locations || []).map(item => [item.checkpoint_id, item])); res.json(data.map(item => ({ ...item, ...(byId.get(item.checkpoint_id) || {}) }))); } catch (error) { next(error); } });
-router.get('/stations', requirePermission('stations:read'), async (req, res, next) => { try { const { data, error } = await query('stations').order('name'); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.get('/stations/:id', requirePermission('stations:read'), async (req, res, next) => { try { const { data: station, error } = await query('stations').eq('station_id', req.params.id).maybeSingle(); if (error) throw error; if (!station) return res.status(404).json({ error: 'Station not found' }); const { data: history, error: historyError } = await query('audit_logs').eq('entity_type', 'station').eq('entity_id', station.station_id).order('created_at', { ascending: false }).limit(25); if (historyError) throw historyError; res.json({ station, history }); } catch (error) { next(error); } });
-router.post('/stations', requirePermission('stations:write'), async (req, res, next) => { try { const { station_id, name, location, phone_number, whatsapp, reason } = req.body; if (!station_id || !name || !location || !reason?.trim()) return res.status(422).json({ error: 'Station ID, name, location, and reason are required' }); const { data, error } = await supabase.from('stations').insert({ station_id, name, location, phone_number: phone_number ? normalisePhone(phone_number) : null, whatsapp: whatsapp ? normalisePhone(whatsapp) : null, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).select().single(); if (error) throw error; await record(req.admin, 'create', 'station', data.station_id, { after: data, reason }); res.status(201).json(data); } catch (error) { next(error); } });
-router.patch('/stations/:id', requirePermission('stations:write'), async (req, res, next) => { try { const { reason, ...changes } = req.body; if (!reason?.trim()) return res.status(422).json({ error: 'A reason is required' }); const before = await query('stations').eq('station_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('stations').update({ ...changes, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('station_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, 'update', 'station', data.station_id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
-router.patch('/stations/:id/active', requirePermission('stations:write'), async (req, res, next) => { try { const { isActive, reason } = req.body; if (typeof isActive !== 'boolean' || !reason?.trim()) return res.status(422).json({ error: 'Status and a reason are required' }); const before = await query('stations').eq('station_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('stations').update({ is_active: isActive, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('station_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, isActive ? 'activate' : 'deactivate', 'station', data.station_id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
-router.get('/checkpoints/:id', requirePermission('checkpoints:read'), async (req, res, next) => { try { const { data: checkpoint, error } = await query('checkpoints').eq('checkpoint_id', req.params.id).maybeSingle(); if (error) throw error; if (!checkpoint) return res.status(404).json({ error: 'Checkpoint not found' }); const { data: history, error: historyError } = await query('audit_logs').eq('entity_type', 'checkpoint').eq('entity_id', checkpoint.checkpoint_id).order('created_at', { ascending: false }).limit(25); if (historyError) throw historyError; res.json({ checkpoint, history }); } catch (error) { next(error); } });
-router.post('/checkpoints', requirePermission('checkpoints:write'), async (req, res, next) => { try { const body = req.body; if (!body.checkpoint_id || !body.name || !body.location || !(body.route_ids || []).length) return res.status(422).json({ error: 'Checkpoint ID, name, location, and route coverage are required' }); const recordToInsert = { ...body, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }; const { data, error } = await supabase.from('checkpoints').insert(recordToInsert).select().single(); if (error) throw error; await record(req.admin, 'create', 'checkpoint', data.checkpoint_id, { after: data }); res.status(201).json(data); } catch (error) { next(error); } });
-router.patch('/checkpoints/:id/active', requirePermission('checkpoints:write'), async (req, res, next) => { try { const { isActive, reason } = req.body; if (typeof isActive !== 'boolean' || !reason?.trim()) return res.status(422).json({ error: 'Status and an operational reason are required' }); const before = await query('checkpoints').eq('checkpoint_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('checkpoints').update({ is_active: isActive, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('checkpoint_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, isActive ? 'activate' : 'deactivate', 'checkpoint', data.checkpoint_id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
-router.patch('/checkpoints/:id', requirePermission('checkpoints:write'), async (req, res, next) => { try { const before = await query('checkpoints').eq('checkpoint_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('checkpoints').update({ ...req.body, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('checkpoint_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, 'update', 'checkpoint', data.checkpoint_id, { before: before.data, after: data, reason: req.body.reason || null }); res.json(data); } catch (error) { next(error); } });
-router.patch('/checkpoints/:id/officers/:badgeId/duty-status', requirePermission('checkpoints:write'), async (req, res, next) => { try { const { data: checkpoint, error } = await query('checkpoints').eq('checkpoint_id', req.params.id).single(); if (error) throw error; const officers = (checkpoint.duty_officers || []).map(officer => officer.badgeId === req.params.badgeId ? { ...officer, onDuty: Boolean(req.body.onDuty) } : officer); const { data, error: updateError } = await supabase.from('checkpoints').update({ duty_officers: officers, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('checkpoint_id', req.params.id).select().single(); if (updateError) throw updateError; await record(req.admin, 'duty-status', 'checkpoint', data.checkpoint_id, { before: checkpoint.duty_officers, after: officers }); res.json(data); } catch (error) { next(error); } });
+router.get(
+  "/checkpoints",
+  requirePermission("checkpoints:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error, count } = await pageQuery(
+        "checkpoints",
+        pagination,
+      ).order("name");
+      if (error) throw error;
+      const { data: locations, error: locationError } = await supabase.rpc(
+        "admin_checkpoint_locations",
+      );
+      if (locationError) throw locationError;
+      const byId = new Map(
+        (locations || []).map((item) => [item.checkpoint_id, item]),
+      );
+      res.json(
+        paged(
+          (data || []).map((item) => ({
+            ...item,
+            ...(byId.get(item.checkpoint_id) || {}),
+          })),
+          count,
+          pagination,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/stations",
+  requirePermission("stations:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error, count } = await pageQuery(
+        "stations",
+        pagination,
+      ).order("name");
+      if (error) throw error;
+      res.json(paged(data, count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/stations/:id",
+  requirePermission("stations:read"),
+  async (req, res, next) => {
+    try {
+      const { data: station, error } = await query("stations")
+        .eq("station_id", req.params.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!station) return res.status(404).json({ error: "Station not found" });
+      const { data: history, error: historyError } = await query("audit_logs")
+        .eq("entity_type", "station")
+        .eq("entity_id", station.station_id)
+        .order("created_at", { ascending: false })
+        .limit(25);
+      if (historyError) throw historyError;
+      res.json({ station, history });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/stations",
+  requirePermission("stations:write"),
+  async (req, res, next) => {
+    try {
+      const { station_id, name, location, phone_number, whatsapp, reason } =
+        req.body;
+      if (!station_id || !name || !location || !reason?.trim())
+        return res
+          .status(422)
+          .json({
+            error: "Station ID, name, location, and reason are required",
+          });
+      const { data, error } = await supabase
+        .from("stations")
+        .insert({
+          station_id,
+          name,
+          location,
+          phone_number: phone_number ? normalisePhone(phone_number) : null,
+          whatsapp: whatsapp ? normalisePhone(whatsapp) : null,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "create", "station", data.station_id, {
+        after: data,
+        reason,
+      });
+      res.status(201).json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/stations/:id",
+  requirePermission("stations:write"),
+  async (req, res, next) => {
+    try {
+      const { reason, ...changes } = req.body;
+      if (!reason?.trim())
+        return res.status(422).json({ error: "A reason is required" });
+      const before = await query("stations")
+        .eq("station_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("stations")
+        .update({
+          ...changes,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("station_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "update", "station", data.station_id, {
+        before: before.data,
+        after: data,
+        reason,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/stations/:id/active",
+  requirePermission("stations:write"),
+  async (req, res, next) => {
+    try {
+      const { isActive, reason } = req.body;
+      if (typeof isActive !== "boolean" || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "Status and a reason are required" });
+      const before = await query("stations")
+        .eq("station_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("stations")
+        .update({
+          is_active: isActive,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("station_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        isActive ? "activate" : "deactivate",
+        "station",
+        data.station_id,
+        { before: before.data, after: data, reason },
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/checkpoints/:id",
+  requirePermission("checkpoints:read"),
+  async (req, res, next) => {
+    try {
+      const { data: checkpoint, error } = await query("checkpoints")
+        .eq("checkpoint_id", req.params.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!checkpoint)
+        return res.status(404).json({ error: "Checkpoint not found" });
+      const { data: history, error: historyError } = await query("audit_logs")
+        .eq("entity_type", "checkpoint")
+        .eq("entity_id", checkpoint.checkpoint_id)
+        .order("created_at", { ascending: false })
+        .limit(25);
+      if (historyError) throw historyError;
+      res.json({ checkpoint, history });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/checkpoints",
+  requirePermission("checkpoints:write"),
+  async (req, res, next) => {
+    try {
+      const body = req.body;
+      if (
+        !body.checkpoint_id ||
+        !body.name ||
+        !body.location ||
+        !(body.route_ids || []).length
+      )
+        return res
+          .status(422)
+          .json({
+            error:
+              "Checkpoint ID, name, location, and route coverage are required",
+          });
+      const recordToInsert = {
+        ...body,
+        last_edited_by: req.admin.id,
+        last_edited_at: new Date().toISOString(),
+      };
+      const { data, error } = await supabase
+        .from("checkpoints")
+        .insert(recordToInsert)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "create", "checkpoint", data.checkpoint_id, {
+        after: data,
+      });
+      res.status(201).json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/checkpoints/:id/active",
+  requirePermission("checkpoints:write"),
+  async (req, res, next) => {
+    try {
+      const { isActive, reason } = req.body;
+      if (typeof isActive !== "boolean" || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "Status and an operational reason are required" });
+      const before = await query("checkpoints")
+        .eq("checkpoint_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("checkpoints")
+        .update({
+          is_active: isActive,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("checkpoint_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        isActive ? "activate" : "deactivate",
+        "checkpoint",
+        data.checkpoint_id,
+        { before: before.data, after: data, reason },
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/checkpoints/:id",
+  requirePermission("checkpoints:write"),
+  async (req, res, next) => {
+    try {
+      const before = await query("checkpoints")
+        .eq("checkpoint_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("checkpoints")
+        .update({
+          ...req.body,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("checkpoint_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "update", "checkpoint", data.checkpoint_id, {
+        before: before.data,
+        after: data,
+        reason: req.body.reason || null,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/checkpoints/:id/officers/:badgeId/duty-status",
+  requirePermission("checkpoints:write"),
+  async (req, res, next) => {
+    try {
+      const { data: checkpoint, error } = await query("checkpoints")
+        .eq("checkpoint_id", req.params.id)
+        .single();
+      if (error) throw error;
+      const officers = (checkpoint.duty_officers || []).map((officer) =>
+        officer.badgeId === req.params.badgeId
+          ? { ...officer, onDuty: Boolean(req.body.onDuty) }
+          : officer,
+      );
+      const { data, error: updateError } = await supabase
+        .from("checkpoints")
+        .update({
+          duty_officers: officers,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("checkpoint_id", req.params.id)
+        .select()
+        .single();
+      if (updateError) throw updateError;
+      await record(req.admin, "duty-status", "checkpoint", data.checkpoint_id, {
+        before: checkpoint.duty_officers,
+        after: officers,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/routes', requirePermission('routes:read'), async (req, res, next) => { try { const [{ data, error }, { data: geometries, error: geometryError }] = await Promise.all([query('routes').order('name'), supabase.rpc('saferide_route_geometries')]); if (error) throw error; if (geometryError) throw geometryError; const geometryByRoute = new Map((geometries || []).map(item => [item.route_id, item.map_polyline])); res.json((data || []).map(route => ({ ...route, map_polyline: geometryByRoute.get(route.route_id) || null }))); } catch (error) { next(error); } });
-router.get('/routes/:id', requirePermission('routes:read'), async (req, res, next) => { try { const { data: route, error } = await query('routes').eq('route_id', req.params.id).maybeSingle(); if (error) throw error; if (!route) return res.status(404).json({ error: 'Route not found' }); const { data: checkpoints, error: checkpointError } = await query('checkpoints').contains('route_ids', [route.route_id]).order('name'); if (checkpointError) throw checkpointError; const { data: history, error: historyError } = await query('audit_logs').eq('entity_type', 'route').eq('entity_id', route.route_id).order('created_at', { ascending: false }).limit(25); if (historyError) throw historyError; res.json({ route, checkpoints, history }); } catch (error) { next(error); } });
-router.patch('/routes/:id', requirePermission('routes:write'), async (req, res, next) => { try { const before = await query('routes').eq('route_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('routes').update({ ...req.body, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('route_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, 'update', 'route', data.route_id, { before: before.data, after: data, reason: req.body.reason || null }); res.json(data); } catch (error) { next(error); } });
-router.post('/routes', requirePermission('routes:write'), async (req, res, next) => { try { const { route_id, name, aliases = [], polyline, polyline_source = 'manual', reason } = req.body; if (!route_id || !name || !polyline || !String(polyline).startsWith('LINESTRING')) return res.status(422).json({ error: 'Route ID, name, and a valid LINESTRING are required' }); const { data, error } = await supabase.from('routes').insert({ route_id, name, aliases, polyline, polyline_source, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).select().single(); if (error) throw error; await record(req.admin, 'create', 'route', data.route_id, { after: data, reason: reason || null }); res.status(201).json(data); } catch (error) { next(error); } });
-router.patch('/routes/:id/active', requirePermission('routes:write'), async (req, res, next) => { try { const { isActive, reason } = req.body; if (typeof isActive !== 'boolean' || !reason?.trim()) return res.status(422).json({ error: 'Status and an operational reason are required' }); const before = await query('routes').eq('route_id', req.params.id).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('routes').update({ is_active: isActive, last_edited_by: req.admin.id, last_edited_at: new Date().toISOString() }).eq('route_id', req.params.id).select().single(); if (error) throw error; await record(req.admin, isActive ? 'activate' : 'deactivate', 'route', data.route_id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
+router.get(
+  "/routes",
+  requirePermission("routes:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const [
+        { data, error, count },
+        { data: geometries, error: geometryError },
+      ] = await Promise.all([
+        pageQuery("routes", pagination).order("name"),
+        supabase.rpc("saferide_route_geometries"),
+      ]);
+      if (error) throw error;
+      if (geometryError) throw geometryError;
+      const geometryByRoute = new Map(
+        (geometries || []).map((item) => [item.route_id, item.map_polyline]),
+      );
+      res.json(
+        paged(
+          (data || []).map((route) => ({
+            ...route,
+            map_polyline: geometryByRoute.get(route.route_id) || null,
+          })),
+          count,
+          pagination,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/routes/:id",
+  requirePermission("routes:read"),
+  async (req, res, next) => {
+    try {
+      const { data: route, error } = await query("routes")
+        .eq("route_id", req.params.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!route) return res.status(404).json({ error: "Route not found" });
+      const { data: checkpoints, error: checkpointError } = await query(
+        "checkpoints",
+      )
+        .contains("route_ids", [route.route_id])
+        .order("name");
+      if (checkpointError) throw checkpointError;
+      const { data: history, error: historyError } = await query("audit_logs")
+        .eq("entity_type", "route")
+        .eq("entity_id", route.route_id)
+        .order("created_at", { ascending: false })
+        .limit(25);
+      if (historyError) throw historyError;
+      res.json({ route, checkpoints, history });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/routes/:id",
+  requirePermission("routes:write"),
+  async (req, res, next) => {
+    try {
+      const before = await query("routes")
+        .eq("route_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("routes")
+        .update({
+          ...req.body,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("route_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "update", "route", data.route_id, {
+        before: before.data,
+        after: data,
+        reason: req.body.reason || null,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/routes",
+  requirePermission("routes:write"),
+  async (req, res, next) => {
+    try {
+      const {
+        route_id,
+        name,
+        aliases = [],
+        polyline,
+        polyline_source = "manual",
+        reason,
+      } = req.body;
+      if (
+        !route_id ||
+        !name ||
+        !polyline ||
+        !String(polyline).startsWith("LINESTRING")
+      )
+        return res
+          .status(422)
+          .json({
+            error: "Route ID, name, and a valid LINESTRING are required",
+          });
+      const { data, error } = await supabase
+        .from("routes")
+        .insert({
+          route_id,
+          name,
+          aliases,
+          polyline,
+          polyline_source,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "create", "route", data.route_id, {
+        after: data,
+        reason: reason || null,
+      });
+      res.status(201).json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/routes/:id/active",
+  requirePermission("routes:write"),
+  async (req, res, next) => {
+    try {
+      const { isActive, reason } = req.body;
+      if (typeof isActive !== "boolean" || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "Status and an operational reason are required" });
+      const before = await query("routes")
+        .eq("route_id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("routes")
+        .update({
+          is_active: isActive,
+          last_edited_by: req.admin.id,
+          last_edited_at: new Date().toISOString(),
+        })
+        .eq("route_id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        isActive ? "activate" : "deactivate",
+        "route",
+        data.route_id,
+        { before: before.data, after: data, reason },
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/reports', requirePermission('reports:read'), async (req, res, next) => { try { let request = query('reports').order('reported_at', { ascending: false }).limit(Math.min(Number(req.query.limit) || 50, 200)); if (req.query.status) request = request.eq('status', req.query.status); if (req.query.caseId) request = request.ilike('case_id', `%${req.query.caseId}%`); if (req.query.plate) request = request.ilike('plate_number', `%${req.query.plate}%`); const { data, error } = await request; if (error) throw error; res.json(data.map(cleanReport)); } catch (error) { next(error); } });
-router.get('/reports/:caseId', requirePermission('reports:read'), async (req, res, next) => { try { const { data, error } = await query('reports').eq('case_id', req.params.caseId).maybeSingle(); if (error) throw error; if (!data) return res.status(404).json({ error: 'Report not found' }); res.json(cleanReport(data)); } catch (error) { next(error); } });
-router.get('/reports/:caseId/messages', requirePermission('reports:read'), async (req, res, next) => { try { res.json(await require('../services/caseMessageService').list(req.params.caseId)); } catch (error) { next(error); } });
-router.post('/reports/:caseId/messages', requirePermission('reports:write'), async (req, res, next) => { try { const message = await require('../services/caseMessageService').send(req.params.caseId, req.admin, 'admin', req.body.body); await record(req.admin, 'case-message', 'report', req.params.caseId, { after: { messageId: message.id } }); res.status(201).json(message); } catch (error) { error.statusCode ? res.status(error.statusCode).json({ error: error.message }) : next(error); } });
-router.patch('/reports/:caseId/status', requirePermission('reports:write'), async (req, res, next) => { try { const { status, reason, notifyReporter = true } = req.body; if (!reason || !['Dispatched', 'Acknowledged', 'Intercepted', 'NotSeen', 'Escalated', 'Closed', 'Rejected'].includes(status)) return res.status(422).json({ error: 'A valid status and reason are required' }); const before = await query('reports').eq('case_id', req.params.caseId).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('reports').update({ status, updated_at: new Date().toISOString() }).eq('case_id', req.params.caseId).select().single(); if (error) throw error; await record(req.admin, 'status-override', 'report', data.case_id, { before: cleanReport(before.data), after: cleanReport(data), reason }); const service = require('../services/reportService'); if (status === 'Escalated') await service.notifyEscalation(data, reason); if (notifyReporter) await service.notifyReporterOutcome(data); res.json(cleanReport(data)); } catch (error) { next(error); } });
+router.get(
+  "/reports",
+  requirePermission("reports:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      let request = pagination
+        ? supabase
+            .from("reports")
+            .select("*", { count: "exact" })
+            .range(pagination.from, pagination.to)
+        : query("reports").limit(Math.min(Number(req.query.limit) || 50, 200));
+      request = request.order("reported_at", { ascending: false });
+      if (req.query.status) request = request.eq("status", req.query.status);
+      if (req.query.caseId)
+        request = request.ilike("case_id", `%${req.query.caseId}%`);
+      if (req.query.plate)
+        request = request.ilike("plate_number", `%${req.query.plate}%`);
+      const { data, error, count } = await request;
+      if (error) throw error;
+      res.json(paged((data || []).map(cleanReport), count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/reports/:caseId",
+  requirePermission("reports:read"),
+  async (req, res, next) => {
+    try {
+      const { data, error } = await query("reports")
+        .eq("case_id", req.params.caseId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(404).json({ error: "Report not found" });
+      res.json(cleanReport(data));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/reports/:caseId/messages",
+  requirePermission("reports:read"),
+  async (req, res, next) => {
+    try {
+      res.json(
+        await require("../services/caseMessageService").list(req.params.caseId),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/reports/:caseId/messages",
+  requirePermission("reports:write"),
+  async (req, res, next) => {
+    try {
+      const message = await require("../services/caseMessageService").send(
+        req.params.caseId,
+        req.admin,
+        "admin",
+        req.body.body,
+      );
+      await record(req.admin, "case-message", "report", req.params.caseId, {
+        after: { messageId: message.id },
+      });
+      res.status(201).json(message);
+    } catch (error) {
+      error.statusCode
+        ? res.status(error.statusCode).json({ error: error.message })
+        : next(error);
+    }
+  },
+);
+router.patch(
+  "/reports/:caseId/status",
+  requirePermission("reports:write"),
+  async (req, res, next) => {
+    try {
+      const { status, reason, notifyReporter = true } = req.body;
+      if (
+        !reason ||
+        ![
+          "Dispatched",
+          "Acknowledged",
+          "Intercepted",
+          "NotSeen",
+          "Escalated",
+          "Closed",
+          "Rejected",
+        ].includes(status)
+      )
+        return res
+          .status(422)
+          .json({ error: "A valid status and reason are required" });
+      const before = await query("reports")
+        .eq("case_id", req.params.caseId)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("reports")
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq("case_id", req.params.caseId)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "status-override", "report", data.case_id, {
+        before: cleanReport(before.data),
+        after: cleanReport(data),
+        reason,
+      });
+      const service = require("../services/reportService");
+      if (status === "Escalated") await service.notifyEscalation(data, reason);
+      if (notifyReporter) await service.notifyReporterOutcome(data);
+      res.json(cleanReport(data));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/moderation/queue', requirePermission('reports:write'), async (req, res, next) => { try { const { data, error } = await query('reports').in('moderation_status', ['flagged', 'pending']).order('reported_at'); if (error) throw error; res.json(data.map(cleanReport)); } catch (error) { next(error); } });
-router.get('/moderation/flags', requirePermission('moderation:read'), async (req, res, next) => { try { const { data, error } = await query('moderation_flags').order('updated_at', { ascending: false }); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.patch('/moderation/flags/:id', requirePermission('moderation:write'), async (req, res, next) => { try { const { warning_count, cooldown_until, is_banned, reason } = req.body; if (!reason?.trim()) return res.status(422).json({ error: 'A moderation reason is required' }); const before = await query('moderation_flags').eq('id', req.params.id).single(); if (before.error) throw before.error; const flag_history = [...(before.data.flag_history || []), { at: new Date().toISOString(), action: 'admin-update', reason, by: req.admin.id }]; const { data, error } = await supabase.from('moderation_flags').update({ warning_count: Number.isInteger(warning_count) ? warning_count : before.data.warning_count, cooldown_until: cooldown_until || null, is_banned: typeof is_banned === 'boolean' ? is_banned : before.data.is_banned, flag_history, updated_at: new Date().toISOString() }).eq('id', req.params.id).select().single(); if (error) throw error; await record(req.admin, 'update', 'moderation_flag', data.id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
-router.post('/moderation/:caseId/:decision', requirePermission('reports:write'), async (req, res, next) => { try { const approved = ['dismiss', 'confirm']; if (!approved.includes(req.params.decision)) return res.status(404).end(); const before = await query('reports').eq('case_id', req.params.caseId).single(); if (before.error) throw before.error; const changes = req.params.decision === 'dismiss' ? { moderation_status: 'reviewed-dismissed', flag_reasons: [] } : { moderation_status: 'reviewed-confirmed', status: 'Rejected' }; const { data, error } = await supabase.from('reports').update(changes).eq('case_id', req.params.caseId).select().single(); if (error) throw error; await record(req.admin, `moderation-${req.params.decision}`, 'report', data.case_id, { before: cleanReport(before.data), after: cleanReport(data), reason: req.body.reason || null }); res.json(cleanReport(data)); } catch (error) { next(error); } });
+router.get(
+  "/moderation/queue",
+  requirePermission("reports:write"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      let request = pageQuery("reports", pagination)
+        .in("moderation_status", ["flagged", "pending"])
+        .order("reported_at");
+      const { data, error, count } = await request;
+      if (error) throw error;
+      res.json(paged((data || []).map(cleanReport), count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/moderation/flags",
+  requirePermission("moderation:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error, count } = await pageQuery(
+        "moderation_flags",
+        pagination,
+      ).order("updated_at", { ascending: false });
+      if (error) throw error;
+      res.json(paged(data, count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/moderation/flags/:id",
+  requirePermission("moderation:write"),
+  async (req, res, next) => {
+    try {
+      const { warning_count, cooldown_until, is_banned, reason } = req.body;
+      if (!reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "A moderation reason is required" });
+      const before = await query("moderation_flags")
+        .eq("id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const flag_history = [
+        ...(before.data.flag_history || []),
+        {
+          at: new Date().toISOString(),
+          action: "admin-update",
+          reason,
+          by: req.admin.id,
+        },
+      ];
+      const { data, error } = await supabase
+        .from("moderation_flags")
+        .update({
+          warning_count: Number.isInteger(warning_count)
+            ? warning_count
+            : before.data.warning_count,
+          cooldown_until: cooldown_until || null,
+          is_banned:
+            typeof is_banned === "boolean" ? is_banned : before.data.is_banned,
+          flag_history,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "update", "moderation_flag", data.id, {
+        before: before.data,
+        after: data,
+        reason,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/moderation/:caseId/:decision",
+  requirePermission("reports:write"),
+  async (req, res, next) => {
+    try {
+      const approved = ["dismiss", "confirm"];
+      if (!approved.includes(req.params.decision)) return res.status(404).end();
+      const before = await query("reports")
+        .eq("case_id", req.params.caseId)
+        .single();
+      if (before.error) throw before.error;
+      const changes =
+        req.params.decision === "dismiss"
+          ? { moderation_status: "reviewed-dismissed", flag_reasons: [] }
+          : { moderation_status: "reviewed-confirmed", status: "Rejected" };
+      const { data, error } = await supabase
+        .from("reports")
+        .update(changes)
+        .eq("case_id", req.params.caseId)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        `moderation-${req.params.decision}`,
+        "report",
+        data.case_id,
+        {
+          before: cleanReport(before.data),
+          after: cleanReport(data),
+          reason: req.body.reason || null,
+        },
+      );
+      res.json(cleanReport(data));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/vehicles', requirePermission('vehicles:read'), async (req, res, next) => { try { const { data, error } = await query('reports').not('plate_number', 'is', null).order('reported_at', { ascending: false }); if (error) throw error; const byPlate = new Map(); for (const item of data) { const key = item.plate_number; const current = byPlate.get(key) || { plate_number: key, report_count: 0, first_reported_at: item.reported_at, latest_reported_at: item.reported_at, watch_status: item.vehicle_watch_status || 'STANDARD', linked_case_ids: [] }; current.report_count += 1; current.first_reported_at = current.first_reported_at < item.reported_at ? current.first_reported_at : item.reported_at; current.latest_reported_at = current.latest_reported_at > item.reported_at ? current.latest_reported_at : item.reported_at; current.watch_status = item.vehicle_watch_status === 'HIGH' ? 'HIGH' : current.watch_status; current.linked_case_ids.push(item.case_id); byPlate.set(key, current); } res.json([...byPlate.values()].sort((a, b) => b.report_count - a.report_count)); } catch (error) { next(error); } });
-router.get('/vehicles/:plate', requirePermission('vehicles:read'), async (req, res, next) => { try { const { data, error } = await query('reports').eq('plate_number', req.params.plate).order('reported_at', { ascending: false }); if (error) throw error; if (!data.length) return res.status(404).json({ error: 'Vehicle not found' }); const latest = data[0]; res.json({ plate_number: req.params.plate, report_count: data.length, watch_status: latest.vehicle_watch_status || 'STANDARD', watch_reason: latest.vehicle_watch_reason || null, reports: data.map(cleanReport) }); } catch (error) { next(error); } });
-router.patch('/vehicles/:plate/watch-status', requirePermission('vehicles:write'), async (req, res, next) => { try { const { watchStatus, reason } = req.body; if (!['STANDARD', 'HIGH'].includes(watchStatus) || !reason?.trim()) return res.status(422).json({ error: 'A valid watch status and reason are required' }); const { data: before, error: beforeError } = await query('reports').eq('plate_number', req.params.plate); if (beforeError) throw beforeError; if (!before.length) return res.status(404).json({ error: 'Vehicle not found' }); const { data, error } = await supabase.from('reports').update({ vehicle_watch_status: watchStatus, vehicle_watch_reason: reason, updated_at: new Date().toISOString() }).eq('plate_number', req.params.plate).select(); if (error) throw error; await record(req.admin, 'vehicle-watch-status', 'vehicle', req.params.plate, { before: before.map(cleanReport), after: data.map(cleanReport), reason }); res.json({ plate_number: req.params.plate, watch_status: watchStatus }); } catch (error) { next(error); } });
+router.get(
+  "/vehicles",
+  requirePermission("vehicles:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error } = await query("reports")
+        .not("plate_number", "is", null)
+        .order("reported_at", { ascending: false });
+      if (error) throw error;
+      const byPlate = new Map();
+      for (const item of data || []) {
+        const key = item.plate_number;
+        const current = byPlate.get(key) || {
+          plate_number: key,
+          report_count: 0,
+          first_reported_at: item.reported_at,
+          latest_reported_at: item.reported_at,
+          watch_status: item.vehicle_watch_status || "STANDARD",
+          linked_case_ids: [],
+        };
+        current.report_count += 1;
+        current.first_reported_at =
+          current.first_reported_at < item.reported_at
+            ? current.first_reported_at
+            : item.reported_at;
+        current.latest_reported_at =
+          current.latest_reported_at > item.reported_at
+            ? current.latest_reported_at
+            : item.reported_at;
+        current.watch_status =
+          item.vehicle_watch_status === "HIGH" ? "HIGH" : current.watch_status;
+        current.linked_case_ids.push(item.case_id);
+        byPlate.set(key, current);
+      }
+      const vehicles = [...byPlate.values()].sort(
+        (a, b) => b.report_count - a.report_count,
+      );
+      res.json(
+        pagination
+          ? paged(
+              vehicles.slice(pagination.from, pagination.to + 1),
+              vehicles.length,
+              pagination,
+            )
+          : vehicles,
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/vehicles/:plate",
+  requirePermission("vehicles:read"),
+  async (req, res, next) => {
+    try {
+      const { data, error } = await query("reports")
+        .eq("plate_number", req.params.plate)
+        .order("reported_at", { ascending: false });
+      if (error) throw error;
+      if (!data.length)
+        return res.status(404).json({ error: "Vehicle not found" });
+      const latest = data[0];
+      res.json({
+        plate_number: req.params.plate,
+        report_count: data.length,
+        watch_status: latest.vehicle_watch_status || "STANDARD",
+        watch_reason: latest.vehicle_watch_reason || null,
+        reports: data.map(cleanReport),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/vehicles/:plate/watch-status",
+  requirePermission("vehicles:write"),
+  async (req, res, next) => {
+    try {
+      const { watchStatus, reason } = req.body;
+      if (!["STANDARD", "HIGH"].includes(watchStatus) || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "A valid watch status and reason are required" });
+      const { data: before, error: beforeError } = await query("reports").eq(
+        "plate_number",
+        req.params.plate,
+      );
+      if (beforeError) throw beforeError;
+      if (!before.length)
+        return res.status(404).json({ error: "Vehicle not found" });
+      const { data, error } = await supabase
+        .from("reports")
+        .update({
+          vehicle_watch_status: watchStatus,
+          vehicle_watch_reason: reason,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("plate_number", req.params.plate)
+        .select();
+      if (error) throw error;
+      await record(
+        req.admin,
+        "vehicle-watch-status",
+        "vehicle",
+        req.params.plate,
+        {
+          before: before.map(cleanReport),
+          after: data.map(cleanReport),
+          reason,
+        },
+      );
+      res.json({ plate_number: req.params.plate, watch_status: watchStatus });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/settings', requirePermission('settings:read'), async (req, res, next) => { try { const { data, error } = await query('app_settings').eq('id', 'saferide-config').single(); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.patch('/settings', requirePermission('settings:write'), async (req, res, next) => { try { const before = await query('app_settings').eq('id', 'saferide-config').single(); if (before.error) throw before.error; const { reason, ...settings } = req.body; const { data, error } = await supabase.from('app_settings').update({ ...settings, id: 'saferide-config', updated_by: req.admin.id, updated_at: new Date().toISOString() }).eq('id', 'saferide-config').select().single(); if (error) throw error; invalidateSettingsCache(); await record(req.admin, 'update', 'settings', 'saferide-config', { before: before.data, after: data, reason: reason || null }); res.json(data); } catch (error) { next(error); } });
+router.get(
+  "/settings",
+  requirePermission("settings:read"),
+  async (req, res, next) => {
+    try {
+      const { data, error } = await query("app_settings")
+        .eq("id", "saferide-config")
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/settings",
+  requirePermission("settings:write"),
+  async (req, res, next) => {
+    try {
+      const before = await query("app_settings")
+        .eq("id", "saferide-config")
+        .single();
+      if (before.error) throw before.error;
+      const { reason, ...settings } = req.body;
+      const { data, error } = await supabase
+        .from("app_settings")
+        .update({
+          ...settings,
+          id: "saferide-config",
+          updated_by: req.admin.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", "saferide-config")
+        .select()
+        .single();
+      if (error) throw error;
+      invalidateSettingsCache();
+      await record(req.admin, "update", "settings", "saferide-config", {
+        before: before.data,
+        after: data,
+        reason: reason || null,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/audit-logs', requirePermission('audit:read'), async (req, res, next) => { try { const { data, error } = await query('audit_logs').order('created_at', { ascending: false }).limit(100); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.get('/users', requirePermission('users:read'), async (req, res, next) => { try { const { data, error } = await query('admin_users').order('created_at'); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.get('/users/:id', requirePermission('users:read'), async (req, res, next) => { try { const { data: user, error } = await query('admin_users').eq('id', req.params.id).maybeSingle(); if (error) throw error; if (!user) return res.status(404).json({ error: 'Admin user not found' }); const { data: history, error: historyError } = await query('audit_logs').eq('entity_type', 'admin_user').eq('entity_id', user.id).order('created_at', { ascending: false }).limit(25); if (historyError) throw historyError; res.json({ user, history }); } catch (error) { next(error); } });
-router.post('/users/invite', requirePermission('users:write'), async (req, res, next) => { try { const { email, name, role } = req.body; if (!email || !name || !role) return res.status(422).json({ error: 'Name, email, and role are required' }); const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, { data: { name } }); if (error) throw error; const { data: admin, error: createError } = await supabase.from('admin_users').insert({ auth_user_id: data.user.id, name, email, role }).select().single(); if (createError) throw createError; await record(req.admin, 'invite', 'admin_user', admin.id, { after: admin }); res.status(201).json(admin); } catch (error) { next(error); } });
-router.patch('/users/:id', requirePermission('users:write'), async (req, res, next) => { try { const { role, is_active, station_scope, reason } = req.body; if (!reason?.trim()) return res.status(422).json({ error: 'A reason is required for user access changes' }); const before = await query('admin_users').eq('id', req.params.id).single(); if (before.error) throw before.error; const changes = {}; if (role) changes.role = role; if (typeof is_active === 'boolean') changes.is_active = is_active; if (Array.isArray(station_scope)) changes.station_scope = station_scope; changes.updated_at = new Date().toISOString(); const { data, error } = await supabase.from('admin_users').update(changes).eq('id', req.params.id).select().single(); if (error) throw error; await record(req.admin, 'update-access', 'admin_user', data.id, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
+router.get(
+  "/audit-logs",
+  requirePermission("audit:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const request = pageQuery("audit_logs", pagination).order("created_at", {
+        ascending: false,
+      });
+      if (!pagination) request.limit(100);
+      const { data, error, count } = await request;
+      if (error) throw error;
+      res.json(paged(data, count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/users",
+  requirePermission("users:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error, count } = await pageQuery(
+        "admin_users",
+        pagination,
+      ).order("created_at");
+      if (error) throw error;
+      res.json(paged(data, count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.get(
+  "/users/:id",
+  requirePermission("users:read"),
+  async (req, res, next) => {
+    try {
+      const { data: user, error } = await query("admin_users")
+        .eq("id", req.params.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!user) return res.status(404).json({ error: "Admin user not found" });
+      const { data: history, error: historyError } = await query("audit_logs")
+        .eq("entity_type", "admin_user")
+        .eq("entity_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(25);
+      if (historyError) throw historyError;
+      res.json({ user, history });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.post(
+  "/users/invite",
+  requirePermission("users:write"),
+  async (req, res, next) => {
+    try {
+      const { email, name, role } = req.body;
+      if (!email || !name || !role)
+        return res
+          .status(422)
+          .json({ error: "Name, email, and role are required" });
+      const { data, error } = await supabase.auth.admin.inviteUserByEmail(
+        email,
+        { data: { name } },
+      );
+      if (error) throw error;
+      const { data: admin, error: createError } = await supabase
+        .from("admin_users")
+        .insert({ auth_user_id: data.user.id, name, email, role })
+        .select()
+        .single();
+      if (createError) throw createError;
+      await record(req.admin, "invite", "admin_user", admin.id, {
+        after: admin,
+      });
+      res.status(201).json(admin);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/users/:id",
+  requirePermission("users:write"),
+  async (req, res, next) => {
+    try {
+      const { role, is_active, station_scope, reason } = req.body;
+      if (!reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "A reason is required for user access changes" });
+      const before = await query("admin_users")
+        .eq("id", req.params.id)
+        .single();
+      if (before.error) throw before.error;
+      const changes = {};
+      if (role) changes.role = role;
+      if (typeof is_active === "boolean") changes.is_active = is_active;
+      if (Array.isArray(station_scope)) changes.station_scope = station_scope;
+      changes.updated_at = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("admin_users")
+        .update(changes)
+        .eq("id", req.params.id)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(req.admin, "update-access", "admin_user", data.id, {
+        before: before.data,
+        after: data,
+        reason,
+      });
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.get('/templates', requirePermission('templates:read'), async (req, res, next) => { try { const { data, error } = await query('message_templates').order('template_key'); if (error) throw error; res.json(data); } catch (error) { next(error); } });
-router.put('/templates/:key', requirePermission('templates:write'), async (req, res, next) => { try { const { label, body, is_active = true, reason } = req.body; if (!label?.trim() || !body?.trim() || !reason?.trim()) return res.status(422).json({ error: 'Label, body, and a change reason are required' }); const before = await query('message_templates').eq('template_key', req.params.key).maybeSingle(); if (before.error) throw before.error; const { data, error } = await supabase.from('message_templates').upsert({ template_key: req.params.key, label, body, is_active, updated_by: req.admin.id, updated_at: new Date().toISOString() }).select().single(); if (error) throw error; await record(req.admin, 'save-template', 'message_template', data.template_key, { before: before.data || null, after: data, reason }); res.json(data); } catch (error) { next(error); } });
-router.patch('/templates/:key/archive', requirePermission('templates:write'), async (req, res, next) => { try { const { is_active, reason } = req.body; if (typeof is_active !== 'boolean' || !reason?.trim()) return res.status(422).json({ error: 'Status and a change reason are required' }); const before = await query('message_templates').eq('template_key', req.params.key).single(); if (before.error) throw before.error; const { data, error } = await supabase.from('message_templates').update({ is_active, archived_at: is_active ? null : new Date().toISOString(), updated_by: req.admin.id, updated_at: new Date().toISOString() }).eq('template_key', req.params.key).select().single(); if (error) throw error; await record(req.admin, is_active ? 'restore-template' : 'archive-template', 'message_template', data.template_key, { before: before.data, after: data, reason }); res.json(data); } catch (error) { next(error); } });
+router.get(
+  "/templates",
+  requirePermission("templates:read"),
+  async (req, res, next) => {
+    try {
+      const pagination = pageRequest(req.query);
+      const { data, error, count } = await pageQuery(
+        "message_templates",
+        pagination,
+      ).order("template_key");
+      if (error) throw error;
+      res.json(paged(data, count, pagination));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.put(
+  "/templates/:key",
+  requirePermission("templates:write"),
+  async (req, res, next) => {
+    try {
+      const { label, body, is_active = true, reason } = req.body;
+      if (!label?.trim() || !body?.trim() || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "Label, body, and a change reason are required" });
+      const before = await query("message_templates")
+        .eq("template_key", req.params.key)
+        .maybeSingle();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("message_templates")
+        .upsert({
+          template_key: req.params.key,
+          label,
+          body,
+          is_active,
+          updated_by: req.admin.id,
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        "save-template",
+        "message_template",
+        data.template_key,
+        { before: before.data || null, after: data, reason },
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+router.patch(
+  "/templates/:key/archive",
+  requirePermission("templates:write"),
+  async (req, res, next) => {
+    try {
+      const { is_active, reason } = req.body;
+      if (typeof is_active !== "boolean" || !reason?.trim())
+        return res
+          .status(422)
+          .json({ error: "Status and a change reason are required" });
+      const before = await query("message_templates")
+        .eq("template_key", req.params.key)
+        .single();
+      if (before.error) throw before.error;
+      const { data, error } = await supabase
+        .from("message_templates")
+        .update({
+          is_active,
+          archived_at: is_active ? null : new Date().toISOString(),
+          updated_by: req.admin.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("template_key", req.params.key)
+        .select()
+        .single();
+      if (error) throw error;
+      await record(
+        req.admin,
+        is_active ? "restore-template" : "archive-template",
+        "message_template",
+        data.template_key,
+        { before: before.data, after: data, reason },
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-router.use((error, _req, res, _next) => { console.error('Admin API error:', error); res.status(500).json({ error: 'Admin request failed' }); });
+router.use((error, _req, res, _next) => {
+  console.error("Admin API error:", error);
+  res.status(500).json({ error: "Admin request failed" });
+});
 module.exports = router;
