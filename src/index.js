@@ -21,9 +21,9 @@ app.use((req, res, next) => {
 });
 app.use('/twilio', require('./routes/webhook'));
 app.use('/admin/api', require('./routes/admin'));
-app.post('/webhook/police-ack', async (req,res) => { try { const result = await require('./services/reportService').updateOutcome(req.body.caseId, String(req.body.action || '').toUpperCase(), req.body.badgeId); const text = result.rerouted ? `📋 *${result.report.case_id}*\n\nPolice have alerted the next interception point ahead on the route.` : `📋 *${result.report.case_id}*\n\nStatus: *${result.report.status.toUpperCase()}*. Thank you for helping keep the roads safe.`; await require('./services/twilioClient').sendText(result.report.reporter_phone_raw, text); res.sendStatus(204); } catch (error) { console.error(error); res.status(500).json({ error: 'Unable to update report' }); } });
+app.use('/police/api', require('./routes/police'));
+app.post('/webhook/police-ack', async (req,res) => { try { const expected = process.env.POLICECONNECT_WEBHOOK_SECRET; const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, ''); if (!expected || !supplied || supplied !== expected) return res.status(401).json({ error: 'Unauthorized' }); const service = require('./services/reportService'); const result = await service.updateOutcome(req.body.caseId, String(req.body.action || '').toUpperCase(), req.body.badgeId); await service.notifyReporterOutcome(result.report, result.rerouted); res.sendStatus(204); } catch (error) { console.error(error); res.status(500).json({ error: 'Unable to update report' }); } });
 app.get('/health', (_req,res) => res.json({ status:'ok', timestamp:new Date().toISOString() }));
 app.get('/api/routes/nearby', async (req,res) => { try { res.json(await require('./services/dispatchService').nearbyRoutes(Number(req.query.lat),Number(req.query.lng))); } catch(e) { res.status(500).json({error:e.message}); } });
-app.get('/api/reports/:caseId', async (req,res) => { const report=await require('./services/reportService').findByCase(req.params.caseId.toUpperCase()); res.status(report?200:404).json(report || {error:'Not found'}); });
 if (process.env.VERCEL !== '1') { const port=process.env.PORT||3000; app.listen(port,()=>console.log(`SafeRide Bot running on port ${port}`)); }
 module.exports=app;

@@ -40,6 +40,8 @@ const permissions = {
     "routes:read",
     "analytics:read",
   ],
+  police_supervisor: ["police:read", "police:write"],
+  police_dispatcher: ["police:read", "police:write"],
 };
 function can(role, permission) {
   return (
