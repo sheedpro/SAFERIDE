@@ -86,6 +86,8 @@ router.get('/cases/:caseId', async (req, res, next) => {
     res.json(cleanCase(data));
   } catch (error) { next(error); }
 });
+router.get('/cases/:caseId/messages', async (req, res, next) => { try { res.json(await require('../services/caseMessageService').list(req.params.caseId)); } catch (error) { next(error); } });
+router.post('/cases/:caseId/messages', requirePermission('police:write'), async (req, res, next) => { try { const message = await require('../services/caseMessageService').send(req.params.caseId, req.admin, 'police', req.body.body); await record(req.admin, 'case-message', 'report', req.params.caseId, { after: { messageId: message.id } }); res.status(201).json(message); } catch (error) { error.statusCode ? res.status(error.statusCode).json({ error: error.message }) : next(error); } });
 
 router.get('/routes', async (_req, res, next) => {
   try {
