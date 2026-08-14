@@ -288,7 +288,7 @@ router.post("/webhook", validSignature, async (req, res) => {
           });
           await client.sendText(
             phone,
-            "🚌 *WHICH VEHICLE ARE YOU IN?*\n\nType the plate, e.g. *UBH 123K*.\n\nCan't see it? Reply *SKIP*.",
+            "🚌 *WHICH VEHICLE ARE YOU IN?*\n\nType the plate, e.g. *UBH 123K*, *UA 001AA*, or a foreign plate.\n\nCan't see it? Reply *SKIP*.",
           );
         } else await client.sendText(phone, "Reply *1* or *2*.");
         break;
@@ -304,7 +304,7 @@ router.post("/webhook", validSignature, async (req, res) => {
           if (!plate)
             await client.sendText(
               phone,
-              "That does not look like a Uganda plate (e.g. UBH 123K). Try again or reply *SKIP*.",
+              "Please enter a registration with letters and numbers (e.g. *UBH 123K*, *UA 001AA*, or a foreign plate), or reply *SKIP*.",
             );
           else {
             await save(hash, session, "AWAITING_VIOLATION", {
