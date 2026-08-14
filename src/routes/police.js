@@ -116,6 +116,7 @@ router.get('/checkpoints', async (_req, res, next) => {
     })));
   } catch (error) { next(error); }
 });
+router.post('/checkpoints', requirePermission('police:write'), async (req, res, next) => { try { const { checkpoint_id, name, location, route_ids, directions_covered = [], shift_start = '00:00', shift_end = '23:59' } = req.body; if (!checkpoint_id || !name || !location || !Array.isArray(route_ids) || !route_ids.length) return res.status(422).json({ error: 'Checkpoint ID, name, coordinates, and at least one route are required' }); const { data, error } = await supabase.from('checkpoints').insert({ checkpoint_id, name, location, route_ids, directions_covered, shift_start, shift_end, duty_officers: [], is_active: true }).select().single(); if (error) throw error; await record(req.admin, 'police-create-checkpoint', 'checkpoint', data.checkpoint_id, { after: { checkpoint_id: data.checkpoint_id, name: data.name, route_ids: data.route_ids } }); res.status(201).json({ checkpoint_id: data.checkpoint_id, name: data.name, route_ids: data.route_ids, is_active: data.is_active }); } catch (error) { next(error); } });
 
 router.patch('/cases/:caseId/outcome', requirePermission('police:write'), async (req, res, next) => {
   try {
