@@ -104,36 +104,4 @@ async function rerouteAfterNotSeen(report, badgeId) {
   for (const officer of target.target.duty_officers.filter(item => item.onDuty)) await twilio.sendOfficerAlert(officer.whatsapp, data);
   return { report: data, rerouted: true };
 }
-async function onDutyOfficers(report) {
-  if (!report.dispatched_checkpoint_id) return [];
-  const { data, error } = await supabase.from('checkpoints').select('duty_officers').eq('checkpoint_id', report.dispatched_checkpoint_id).maybeSingle();
-  if (error) throw error;
-  return (data?.duty_officers || []).filter(item => item.onDuty && item.whatsapp);
-}
-async function runOperationalSweep() {
-  const settings = await getSettings(); const now = Date.now();
-  const { data: reports, error } = await supabase.from('reports').select('*').in('status', ['Dispatched', 'Acknowledged']).order('reported_at').limit(200);
-  if (error) throw error;
-  const result = { escalated: [], reminders: [], skipped: [] };
-  for (const report of reports || []) {
-    if (report.status === 'Dispatched' && now - new Date(report.reported_at).getTime() >= settings.dispatch_ack_timeout_minutes * 60_000) {
-      const outcome = await updateOutcome(report.case_id, 'ESCALATE', 'SYSTEM', { reason: `No checkpoint acknowledgement within ${settings.dispatch_ack_timeout_minutes} minutes` });
-      await supabase.from('reports').update({ auto_escalated_at: new Date().toISOString() }).eq('case_id', report.case_id);
-      await notifyReporterOutcome(outcome.report); result.escalated.push(report.case_id); continue;
-    }
-    if (report.status !== 'Acknowledged') continue;
-    const acknowledgedAt = new Date(report.officer_action_at || report.reported_at).getTime();
-    if (now - acknowledgedAt >= settings.acknowledged_escalation_minutes * 60_000) {
-      const outcome = await updateOutcome(report.case_id, 'ESCALATE', 'SYSTEM', { reason: `No final officer outcome within ${settings.acknowledged_escalation_minutes} minutes after acknowledgement` });
-      await supabase.from('reports').update({ auto_escalated_at: new Date().toISOString() }).eq('case_id', report.case_id);
-      await notifyReporterOutcome(outcome.report); result.escalated.push(report.case_id); continue;
-    }
-    if (!report.officer_reminder_sent_at && now - acknowledgedAt >= settings.acknowledged_reminder_minutes * 60_000) {
-      const officers = await onDutyOfficers(report); await Promise.allSettled(officers.map(officer => twilio.sendOutcomeReminder(officer.whatsapp, report)));
-      await supabase.from('reports').update({ officer_reminder_sent_at: new Date().toISOString() }).eq('case_id', report.case_id);
-      result.reminders.push(report.case_id);
-    }
-  }
-  return result;
-}
-module.exports = { dispatch, findByCase, updateOutcome, authoriseOfficer, notifyReporterOutcome, notifyEscalation, runOperationalSweep };
+module.exports = { dispatch, findByCase, updateOutcome, authoriseOfficer, notifyReporterOutcome, notifyEscalation };
