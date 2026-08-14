@@ -23,7 +23,7 @@ function draftFromReport(report) { return { location: report.reporter_lat == nul
 async function updateOutcome(caseId, action, badgeId) {
   const report = await findByCase(caseId); if (!report) throw new Error(`Report ${caseId} not found`);
   if (action === 'NOTSEEN') return rerouteAfterNotSeen(report, badgeId);
-  const status = action === 'INTERCEPTED' ? 'Intercepted' : 'Escalated';
+  const status = action === 'ONROUTE' ? 'Acknowledged' : action === 'INTERCEPTED' ? 'Intercepted' : 'Escalated';
   const { data, error } = await supabase.from('reports').update({ status, officer_action: action, officer_action_at: new Date().toISOString(), officer_badge_id: badgeId || null }).eq('case_id', caseId).select().single(); if (error) throw error;
   return { report: data, rerouted: false };
 }
