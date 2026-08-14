@@ -12,6 +12,15 @@ async function main() {
     console.log(`\nAdd this value to Vercel or .env:\nTWILIO_TPL_OFFICER_ALERT=${officer}`);
     return;
   }
+  if (process.argv[2] === 'remaining-interactions') {
+    const media = await replies('SafeRide Evidence Option', '📷 *OPTIONAL EVIDENCE*\n\nOnly send evidence when it is safe to do so.', [{ id: 'media_add', title: 'Add photo' }, { id: 'media_skip', title: 'Skip' }]);
+    const dispatched = await replies('SafeRide Report Dispatched', '✅ *REPORT DISPATCHED*\n\nCase: {{1}}\nAlerted: {{2}}', [{ id: 'case_status', title: 'Check status' }, { id: 'case_message', title: 'Message support' }, { id: 'case_menu', title: 'Main menu' }]);
+    const status = await replies('SafeRide Case Status', '📋 *CASE {{1}}*\n\nStatus: {{2}}\nAlerted: {{3}}', [{ id: 'case_message', title: 'Message support' }, { id: 'case_refresh', title: 'Refresh status' }, { id: 'case_menu', title: 'Main menu' }]);
+    const followUp = await replies('SafeRide Officer Follow-up', '⏱️ *CASE {{1}} FOLLOW-UP*\n\nPlease record the current outcome.', [{ id: 'officer_intercepted', title: 'Intercepted' }, { id: 'officer_notseen', title: 'Not seen' }, { id: 'officer_escalate', title: 'Escalate' }]);
+    const escalation = await replies('SafeRide Escalation Alert', '⚠️ *CASE {{1}} ESCALATED*\n\nVehicle: {{2}}\nCorridor: {{3}}', [{ id: 'escalation_acknowledge', title: 'Acknowledge' }, { id: 'escalation_assign', title: 'Assign officer' }, { id: 'case_menu', title: 'Open console' }]);
+    console.log(`\nAdd these values to Vercel or .env:\nTWILIO_TPL_MEDIA_OPTION=${media}\nTWILIO_TPL_REPORT_DISPATCHED=${dispatched}\nTWILIO_TPL_STATUS_RESULT=${status}\nTWILIO_TPL_OFFICER_FOLLOW_UP=${followUp}\nTWILIO_TPL_ESCALATION_ALERT=${escalation}`);
+    return;
+  }
   const mainMenu = await list('SafeRide Main Menu', '🚌 *SAFERIDE — PSV SAFETY REPORTING*\n\nSee something unsafe? Report it in under 2 minutes. Your identity is never shared with the driver.', 'Choose service', [{ id: 'main_report', label: 'Report this vehicle', description: 'Unsafe driving happening now' }, { id: 'main_status', label: 'Check report status', description: 'Use your SafeRide case number' }, { id: 'main_how', label: 'How this works', description: 'Learn the reporting process' }]);
   const violation = await list('SafeRide Violation Menu', '⚠️ *WHAT\'S HAPPENING?*\nPick the main issue:', 'Choose issue', [{id:'violation_dangerous',label:'Dangerous driving'},{id:'violation_speeding',label:'Overspeeding'},{id:'violation_overloading',label:'Overloading'},{id:'violation_impaired',label:'Impaired driver'},{id:'violation_unroadworthy',label:'Unroadworthy vehicle'},{id:'violation_harassment',label:'Harassment'},{id:'violation_deviation',label:'Route deviation'},{id:'violation_overcharging',label:'Overcharging'},{id:'violation_other',label:'Other'}]);
   const direction = await replies('SafeRide Direction', '🧭 *WHICH WAY ARE YOU HEADING?*', [{id:'direction_forward',title:'Towards route end'},{id:'direction_backward',title:'Towards route start'}]);
