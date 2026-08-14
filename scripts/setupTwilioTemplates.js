@@ -7,6 +7,11 @@ const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TO
 async function list(name, body, button, items) { const template = await client.content.v1.contents.create({ friendlyName: name, language: 'en', types: { 'twilio/list-picker': { body, button, items: items.map(item => ({ id: item.id, item: item.label, ...(item.description ? { description: item.description } : {}) })) } } }); console.log(`${name}: ${template.sid}`); return template.sid; }
 async function replies(name, body, actions) { const template = await client.content.v1.contents.create({ friendlyName: name, language: 'en', types: { 'twilio/quick-reply': { body, actions: actions.map(action => ({ id: action.id, title: action.title })) } } }); console.log(`${name}: ${template.sid}`); return template.sid; }
 async function main() {
+  if (process.argv[2] === 'route-picker') {
+    const routePicker = await list('SafeRide Route Picker', '📍 *WHICH ROUTE ARE YOU ON?*\n\n1. {{1}}\n2. {{2}}\n3. {{3}}\n4. {{4}}\n\nChoose a route below, or type another route name.', 'Choose route', [{ id: 'route_1', label: 'Route 1' }, { id: 'route_2', label: 'Route 2' }, { id: 'route_3', label: 'Route 3' }, { id: 'route_4', label: 'Route 4' }]);
+    console.log(`\nAdd this value to Vercel or .env:\nTWILIO_TPL_ROUTE_PICKER=${routePicker}`);
+    return;
+  }
   if (process.argv[2] === 'officer-alert') {
     const officer = await replies('SafeRide Officer Alert', '🚨 *SAFE RIDE INTERCEPTION ALERT*\n\nCase: {{1}}\nVehicle: {{2}}\nIssue: {{3}}\nCorridor: {{4}}\nHeading: {{5}}\n\nIntercept at: {{6}}\nVehicle ETA: ~{{7}} min\n\nSelect your operational response:', [{ id: 'officer_onroute', title: 'On route' }, { id: 'officer_intercepted', title: 'Intercepted' }, { id: 'officer_notseen', title: 'Not seen' }, { id: 'officer_escalate', title: 'Escalate' }]);
     console.log(`\nAdd this value to Vercel or .env:\nTWILIO_TPL_OFFICER_ALERT=${officer}`);

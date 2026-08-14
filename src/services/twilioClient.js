@@ -18,6 +18,7 @@ const T = {
   statusResult: process.env.TWILIO_TPL_STATUS_RESULT,
   officerFollowUp: process.env.TWILIO_TPL_OFFICER_FOLLOW_UP,
   escalationAlert: process.env.TWILIO_TPL_ESCALATION_ALERT,
+  routePicker: process.env.TWILIO_TPL_ROUTE_PICKER,
 };
 async function sendText(phone, body) {
   const message = await client.messages.create({
@@ -69,6 +70,16 @@ async function sendConfirmReport(phone, report, fallback) {
         4: report.violationType,
       })
     : sendText(phone, fallback);
+}
+async function sendRoutePicker(phone, routes, fallback) {
+  if (!T.routePicker || !routes.length) return sendText(phone, fallback);
+
+  return sendContent(phone, T.routePicker, {
+    1: routes[0]?.name || 'No route available',
+    2: routes[1]?.name || 'No route available',
+    3: routes[2]?.name || 'No route available',
+    4: routes[3]?.name || 'No route available',
+  });
 }
 function coordinates(lat, lng) {
   return lat == null || lng == null
@@ -130,6 +141,7 @@ module.exports = {
   sendDirectionMenu,
   sendEmergencyCheck,
   sendConfirmReport,
+  sendRoutePicker,
   sendOfficerAlert,
   sendEscalationAlert,
   sendMediaOption,
