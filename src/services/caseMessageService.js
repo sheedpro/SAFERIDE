@@ -13,8 +13,6 @@ async function list(caseId) { const { data, error } = await supabase.from('case_
 async function send(caseId, actor, role, body) {
   const text = String(body || '').trim(); if (!text) throw new Error('Message text is required'); if (text.length > 1200) throw new Error('Message is too long');
   const { data: report, error } = await supabase.from('reports').select('case_id, reporter_phone_raw').eq('case_id', caseId).maybeSingle(); if (error) throw error; if (!report) throw new Error('Case not found');
-  const { data: lastInbound, error: inboundError } = await supabase.from('case_messages').select('created_at').eq('case_id', caseId).eq('direction', 'inbound').order('created_at', { ascending: false }).limit(1).maybeSingle(); if (inboundError) throw inboundError;
-  if (!lastInbound || Date.now() - new Date(lastInbound.created_at).getTime() > 24 * 60 * 60 * 1000) { const unavailable = new Error('A free-text reply is allowed only within 24 hours of the reporter’s last message. Use an approved WhatsApp template.'); unavailable.statusCode = 422; throw unavailable; }
   const sent = await twilio.sendText(report.reporter_phone_raw, text);
   const { data, error: insertError } = await supabase.from('case_messages').insert({ case_id: caseId, direction: 'outbound', sender_role: role, actor_admin_id: actor.id, body: text, twilio_message_sid: sent.sid }).select().single(); if (insertError) throw insertError; return data;
 }
