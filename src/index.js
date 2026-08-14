@@ -2,7 +2,9 @@
 require('dotenv').config();
 const express = require('express'); const app = express();
 app.use(express.urlencoded({ extended: false })); app.use(express.json());
+app.use((req, res, next) => { const allowedOrigin = process.env.ADMIN_ALLOWED_ORIGIN; if (allowedOrigin && req.headers.origin === allowedOrigin) { res.setHeader('Access-Control-Allow-Origin', allowedOrigin); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS'); } if (req.method === 'OPTIONS') return res.sendStatus(204); next(); });
 app.use('/twilio', require('./routes/webhook'));
+app.use('/admin/api', require('./routes/admin'));
 app.post('/webhook/police-ack', async (req,res) => { try { const result = await require('./services/reportService').updateOutcome(req.body.caseId, String(req.body.action || '').toUpperCase(), req.body.badgeId); const text = result.rerouted ? `📋 *${result.report.case_id}*\n\nPolice have alerted the next interception point ahead on the route.` : `📋 *${result.report.case_id}*\n\nStatus: *${result.report.status.toUpperCase()}*. Thank you for helping keep the roads safe.`; await require('./services/twilioClient').sendText(result.report.reporter_phone_raw, text); res.sendStatus(204); } catch (error) { console.error(error); res.status(500).json({ error: 'Unable to update report' }); } });
 app.get('/health', (_req,res) => res.json({ status:'ok', timestamp:new Date().toISOString() }));
 app.get('/api/routes/nearby', async (req,res) => { try { res.json(await require('./services/dispatchService').nearbyRoutes(Number(req.query.lat),Number(req.query.lng))); } catch(e) { res.status(500).json({error:e.message}); } });

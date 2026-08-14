@@ -1,10 +1,11 @@
 'use strict';
 const supabase = require('../db/supabase');
 const { predictionConfidence } = require('../utils/prediction');
-const speed = Number(process.env.AVG_CORRIDOR_SPEED_KMH || 35);
+const { getSettings } = require('./settingsService');
 async function nearbyRoutes(lat, lng) { const { data, error } = await supabase.rpc('nearby_routes', { lat, lng, max_km: 3 }); if (error) throw error; return data || []; }
 async function selectTarget(draft, options = {}) {
   if (!draft.location || !draft.routeId) return nearestStation(draft.location);
+  const settings = await getSettings(); const speed = Number(settings.avg_corridor_speed_kmh);
   const { data, error } = await supabase.rpc('predicted_dispatch_checkpoint', {
     route_key: draft.routeId,
     lat: draft.location.lat,
