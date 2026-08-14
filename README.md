@@ -6,7 +6,7 @@ PSV safety reporting bot built with Node.js, Express, Twilio WhatsApp, and Supab
 
 1. Run `npm install`, then copy `.env.example` to `.env` and set Twilio and Supabase credentials.
 2. In Supabase SQL Editor, run the migrations in order: `001_initial_schema.sql`, `002_dispatch_functions.sql`, `003_map_dispatch_data.sql`, then `004_predicted_interception.sql`.
-3. Run `npm run db:seed` and `npm run dev`.
+3. Add verified production routes, checkpoints, stations, and officer contact details in Supabase before starting dispatch. Do not use sample operational data in a live deployment. Then run `npm run dev`.
 4. Configure Twilio's incoming-message webhook as `POST https://your-domain/twilio/webhook`.
 5. Run `npm run setup-templates`, then add the printed `TWILIO_TPL_*` values to your local environment and Vercel. Until templates are configured, the bot uses the numbered-text fallback.
 

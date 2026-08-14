@@ -7,7 +7,6 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "db:seed": "node scripts/seed.js",
     "setup-templates": "node scripts/setupTwilioTemplates.js",
     "test": "node --test"
   },

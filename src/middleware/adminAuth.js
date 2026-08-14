@@ -1,7 +1,7 @@
 'use strict';
 const supabase = require('../db/supabase');
 const permissions = {
-  super_admin: ['*'], ops_admin: ['dashboard:read', 'checkpoints:read', 'checkpoints:write', 'routes:read', 'routes:write', 'reports:read', 'reports:write', 'vehicles:read', 'vehicles:write', 'analytics:read', 'settings:read', 'settings:write', 'templates:read', 'audit:read'],
+  super_admin: ['*'], ops_admin: ['dashboard:read', 'checkpoints:read', 'checkpoints:write', 'routes:read', 'routes:write', 'reports:read', 'reports:write', 'vehicles:read', 'vehicles:write', 'analytics:read', 'settings:read', 'settings:write', 'templates:read', 'templates:write', 'audit:read'],
   moderator: ['dashboard:read', 'checkpoints:read', 'routes:read', 'reports:read', 'reports:write', 'vehicles:read', 'analytics:read'], upf_liaison: ['dashboard:read', 'checkpoints:read', 'routes:read', 'analytics:read']
 };
 function can(role, permission) { return permissions[role]?.includes('*') || permissions[role]?.includes(permission); }
