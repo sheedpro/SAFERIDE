@@ -72,13 +72,24 @@ async function sendConfirmReport(phone, report, fallback) {
     : sendText(phone, fallback);
 }
 async function sendRoutePicker(phone, routes, fallback) {
-  if (!T.routePicker || !routes.length) return sendText(phone, fallback);
+  if (!T.routePicker || routes.length < 3) return sendText(phone, fallback);
+
+  const listTitle = (name) =>
+    name.length <= 24 ? name : `${name.slice(0, 23).trimEnd()}…`;
+  const listDescription = (name) =>
+    name.length <= 72 ? name : `${name.slice(0, 71).trimEnd()}…`;
+  const route = (index) => routes[index]?.name;
+  const fourthRoute = route(3);
 
   return sendContent(phone, T.routePicker, {
-    1: routes[0]?.name || 'No route available',
-    2: routes[1]?.name || 'No route available',
-    3: routes[2]?.name || 'No route available',
-    4: routes[3]?.name || 'No route available',
+    1: listTitle(route(0)),
+    2: listTitle(route(1)),
+    3: listTitle(route(2)),
+    4: fourthRoute ? listTitle(fourthRoute) : 'Other route',
+    5: listDescription(route(0)),
+    6: listDescription(route(1)),
+    7: listDescription(route(2)),
+    8: fourthRoute ? listDescription(fourthRoute) : 'Type the route name',
   });
 }
 function coordinates(lat, lng) {

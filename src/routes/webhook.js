@@ -1,45 +1,441 @@
-'use strict';
-const express = require('express'); const twilio = require('twilio'); const router = express.Router();
-const sessions = require('../services/sessionService'); const client = require('../services/twilioClient'); const dispatch = require('../services/dispatchService'); const reports = require('../services/reportService'); const { normalisePhone, phoneHash, formatDateTime } = require('../utils/helpers'); const { validatePlate, isWithinUganda, isCaseId } = require('../utils/validators'); const { EMERGENCY, mainMenu, locationPrompt, violations, violationPrompt } = require('../templates/messages');
-const HIGH_RISK = new Set(['Dangerous / reckless driving','Driver appears drunk / impaired','Harassment of passengers']);
-function validSignature(req, res, next) { if (process.env.NODE_ENV === 'development') return next(); if (!twilio.validateRequest(process.env.TWILIO_AUTH_TOKEN, req.headers['x-twilio-signature'], `${process.env.APP_BASE_URL}/twilio/webhook`, req.body)) return res.status(403).send('Forbidden'); next(); }
-const save = (hash, session, state, data) => sessions.update(hash, { state, session_data: { ...(session.session_data || {}), ...data } });
+"use strict";
+const express = require("express");
+const twilio = require("twilio");
+const router = express.Router();
+const sessions = require("../services/sessionService");
+const client = require("../services/twilioClient");
+const dispatch = require("../services/dispatchService");
+const reports = require("../services/reportService");
+const {
+  normalisePhone,
+  phoneHash,
+  formatDateTime,
+} = require("../utils/helpers");
+const {
+  validatePlate,
+  isWithinUganda,
+  isCaseId,
+} = require("../utils/validators");
+const {
+  EMERGENCY,
+  mainMenu,
+  locationPrompt,
+  violations,
+  violationPrompt,
+} = require("../templates/messages");
+const HIGH_RISK = new Set([
+  "Dangerous / reckless driving",
+  "Driver appears drunk / impaired",
+  "Harassment of passengers",
+]);
+function validSignature(req, res, next) {
+  if (process.env.NODE_ENV === "development") return next();
+  if (
+    !twilio.validateRequest(
+      process.env.TWILIO_AUTH_TOKEN,
+      req.headers["x-twilio-signature"],
+      `${process.env.APP_BASE_URL}/twilio/webhook`,
+      req.body,
+    )
+  )
+    return res.status(403).send("Forbidden");
+  next();
+}
+const save = (hash, session, state, data) =>
+  sessions.update(hash, {
+    state,
+    session_data: { ...(session.session_data || {}), ...data },
+  });
 async function showRoutes(phone, hash, session, lat, lng) {
   const routes = await dispatch.nearbyRoutes(lat, lng);
   const routeChoices = routes.slice(0, 4);
-  const fallback = `📍 Got it. Which route are you on?\n\n${routeChoices.map((route, index) => `${index + 1}. ${route.name}`).join('\n') || 'No mapped routes nearby.'}\n${routeChoices.length + 1}. Other (type route name)`;
+  const fallback = `📍 Got it. Which route are you on?\n\n${routeChoices.map((route, index) => `${index + 1}. ${route.name}`).join("\n") || "No mapped routes nearby."}\n${routeChoices.length + 1}. Other (type route name)`;
 
-  await save(hash, session, 'AWAITING_ROUTE', {
+  await save(hash, session, "AWAITING_ROUTE", {
     location: { lat, lng },
-    locationSource: 'gps-pin',
+    locationSource: "gps-pin",
     nearbyRoutes: routes,
   });
 
   await client.sendRoutePicker(phone, routeChoices, fallback);
 }
-router.post('/webhook', validSignature, async (req, res) => { try { const phone = normalisePhone(req.body.From || ''); const hash = phoneHash(phone); const rawText = (req.body.Body || '').trim(); const labelActions = { 'report this vehicle': 'main_report', 'check report status': 'main_status', 'how this works': 'main_how', 'towards route end': 'direction_forward', 'towards route start': 'direction_backward', 'i need help now': 'safety_help_now', 'i am safe, continue': 'safety_continue', 'confirm & send': 'confirm_send', 'edit details': 'confirm_edit', 'dangerous driving': 'violation_dangerous', overspeeding: 'violation_speeding', overloading: 'violation_overloading', 'impaired driver': 'violation_impaired', 'unroadworthy vehicle': 'violation_unroadworthy', harassment: 'violation_harassment', 'route deviation': 'violation_deviation', overcharging: 'violation_overcharging', other: 'violation_other' }; const action = (req.body.ButtonPayload || (rawText.includes('_') && !rawText.includes(' ') ? rawText : '') || labelActions[rawText.toLowerCase()] || '').toLowerCase(); const interactiveReplies = { main_report: '1', main_status: '2', main_how: '3', direction_forward: '1', direction_backward: '2', safety_help_now: '1', safety_continue: '2', confirm_send: '1', confirm_edit: '2', confirm_cancel: '0', violation_dangerous: '1', violation_speeding: '2', violation_overloading: '3', violation_impaired: '4', violation_unroadworthy: '5', violation_harassment: '6', violation_deviation: '7', violation_overcharging: '8', violation_other: '9', route_1: '1', route_2: '2', route_3: '3', route_4: '4' }; const text = interactiveReplies[action] || rawText; const lower = text.toLowerCase();
-  const session = await sessions.getOrCreate(hash); const data = session.session_data || {};
-  if (['999','112','help','emergency','sos','danger'].includes(lower)) { client.sendText(phone, EMERGENCY).catch(console.error); return res.status(200).end(); }
-  const officer = text.match(/^(ONROUTE|INTERCEPTED|NOTSEEN|ESCALATE)\s+(SR-\d{4}-\d{6})$/i); if (officer) { const report = await reports.findByCase(officer[2].toUpperCase()); const authorisedOfficer = report && await reports.authoriseOfficer(report, phone); if (!authorisedOfficer) { await client.sendText(phone, 'This number is not authorised for that active checkpoint alert.'); return res.status(200).end(); } const officerAction = officer[1].toUpperCase(); const result = await reports.updateOutcome(report.case_id, officerAction, authorisedOfficer.badgeId); await reports.notifyReporterOutcome(result.report, result.rerouted); await client.sendText(phone, officerAction === 'ONROUTE' ? `✅ You are marked on route for *${result.report.case_id}*.` : `✅ *${result.report.case_id}* has been updated to *${result.report.status.toUpperCase()}*.`); return res.status(200).end(); }
-  const match = text.match(/(?:status\s+)?(SR-\d{4}-\d{6})/i); if (match) { const report = await reports.findByCase(match[1].toUpperCase()); const ownedBySender = report?.reporter_phone_hash === hash; await client.sendText(phone, ownedBySender ? `📋 *${report.case_id}*\n\nFiled: ${formatDateTime(report.reported_at)}\nVehicle: ${report.plate_number || report.vehicle_description}\nIssue: ${report.violation_type}\n\nStatus: *${report.status.toUpperCase()}*\nAlerted: ${report.dispatch_target_name || 'Police'}` : `😕 I couldn't find that report for this WhatsApp number.`); return res.status(200).end(); }
-  if (session.state === 'MAIN_MENU' && rawText && !action && !['menu', 'cancel', '0', 'hi', 'hello', 'start', 'report'].includes(lower)) { const caseMessage = await require('../services/caseMessageService').recordInboundForActiveCase(hash, rawText, req.body.MessageSid); if (caseMessage) { await client.sendText(phone, `💬 Your message has been added to case *${caseMessage.case_id}*. A SafeRide team member will reply here.`); return res.status(200).end(); } }
-  if (['menu','cancel','0','hi','hello','start'].includes(lower)) { await sessions.update(hash, { state: 'MAIN_MENU', session_data: {} }); await client.sendMainMenu(phone, mainMenu()); return res.status(200).end(); }
-  if (req.body.Latitude && req.body.Longitude && session.state === 'AWAITING_LOCATION') { const lat = Number(req.body.Latitude), lng = Number(req.body.Longitude); if (!isWithinUganda(lat,lng)) await client.sendText(phone, 'That location is outside Uganda. Please share your current location again.'); else await showRoutes(phone, hash, session, lat, lng); return res.status(200).end(); }
-  switch (session.state) {
-    case 'MAIN_MENU': if (lower === '1' || lower === 'report') { await save(hash,session,'AWAITING_LOCATION',{}); await client.sendText(phone, locationPrompt()); } else if (lower === '2' || lower === 'status') { await save(hash,session,'AWAITING_STATUS_LOOKUP',{}); await client.sendText(phone,'📋 *CHECK REPORT STATUS*\n\nReply with your case number, or reply *LAST*.'); } else if (lower === '3') await client.sendText(phone,'❓ *HOW SAFERIDE WORKS*\n\n1. Share GPS\n2. Pick route and vehicle\n3. Select issue\n4. We alert the checkpoint ahead\n5. Track your case.\n\nReply *1* to report now.'); else await client.sendMainMenu(phone, mainMenu()); break;
-    case 'AWAITING_LOCATION': { const attempts = (data.locationAttempts || 0) + 1; if (attempts < 3) { await save(hash,session,'AWAITING_LOCATION',{locationAttempts:attempts}); await client.sendText(phone,'📍 I need your *actual GPS location*. Tap 📎 → Location → Send current location.'); } else { await save(hash,session,'AWAITING_TEXT_LOCATION',{locationAttempts:attempts}); await client.sendText(phone,'Having trouble sharing location? Reply with the nearest trading center, junction, or landmark and your direction of travel.'); } break; }
-    case 'AWAITING_TEXT_LOCATION': await save(hash,session,'AWAITING_ROUTE',{locationLabel:text,locationSource:'text-fallback',nearbyRoutes:[]}); await client.sendText(phone,'Which route are you on? Type its name.'); break;
-    case 'AWAITING_ROUTE': { const options=data.nearbyRoutes||[]; const selected=options[Number(text)-1]; if(selected) { await save(hash,session,'AWAITING_DIRECTION',{routeId:selected.route_id,routeName:selected.name}); await client.sendDirectionMenu(phone,'🧭 Which way are you heading?\n\n1. Towards Jinja / route end\n2. Towards Kampala / route start'); } else if(text.length>2) { await save(hash,session,'AWAITING_DIRECTION',{routeName:text,routeId:null}); await client.sendDirectionMenu(phone,'🧭 Which way are you heading?\n\n1. Towards route end\n2. Towards route start'); } else await client.sendText(phone,'Please choose a route number or type its name.'); break; }
-    case 'AWAITING_DIRECTION': if (text==='1'||text==='2') { await save(hash,session,'AWAITING_PLATE',{direction:text==='1'?'eastbound':'westbound'}); await client.sendText(phone,'🚌 *WHICH VEHICLE ARE YOU IN?*\n\nType the plate, e.g. *UBH 123K*.\n\nCan\'t see it? Reply *SKIP*.'); } else await client.sendText(phone,'Reply *1* or *2*.'); break;
-    case 'AWAITING_PLATE': if(lower==='skip') { await save(hash,session,'AWAITING_DESCRIPTION',{}); await client.sendText(phone,'Describe the vehicle: colour, type, sticker, sacco, or damage.'); } else { const plate=validatePlate(text); if(!plate) await client.sendText(phone,'That does not look like a Uganda plate (e.g. UBH 123K). Try again or reply *SKIP*.'); else { await save(hash,session,'AWAITING_VIOLATION',{plateNumber:plate}); await client.sendViolationMenu(phone,violationPrompt()); }} break;
-    case 'AWAITING_DESCRIPTION': await save(hash,session,'AWAITING_VIOLATION',{description:text}); await client.sendViolationMenu(phone,violationPrompt()); break;
-    case 'AWAITING_VIOLATION': { const issue=violations[Number(text)-1]; if(!issue) await client.sendText(phone,'Sorry, please pick a number from the list.'); else if(HIGH_RISK.has(issue)) { await save(hash,session,'EMERGENCY_CHECK',{violationType:issue}); await client.sendEmergencyCheck(phone,issue,`⚠️ *ARE YOU SAFE RIGHT NOW?*\n\nYou selected: ${issue}.\n\n1. 🚨 I need help NOW\n2. ✅ I\'m safe, continue report`); } else { await save(hash,session,'AWAITING_MEDIA_OPTIONAL',{violationType:issue}); await client.sendText(phone,'📷 *OPTIONAL: Add a photo?*\n\nSend one photo if safe, or reply *SKIP*.'); } break; }
-    case 'EMERGENCY_CHECK': if(text==='1') { const result=await reports.dispatch(phone,hash,data,'Escalated'); await client.sendText(phone,result.rateLimited?'Please wait before filing another report.':result.blocked?'This WhatsApp account is temporarily unable to file reports. Please contact SafeRide support if you believe this is an error.':`📞 Call *999* or *112* immediately.\n\nYour report is being dispatched. Case: *${result.report.case_id}*`); } else if(text==='2') { await save(hash,session,'CONFIRM_REPORT',{}); await client.sendConfirmReport(phone,data,review(data)); } else await client.sendText(phone,'Reply *1* for help now or *2* to continue.'); break;
-    case 'AWAITING_MEDIA_OPTIONAL': await save(hash,session,'CONFIRM_REPORT',{mediaUrl:req.body.MediaUrl0 || null}); await client.sendConfirmReport(phone,{...data,mediaUrl:req.body.MediaUrl0 || null},review({...data,mediaUrl:req.body.MediaUrl0 || null})); break;
-    case 'CONFIRM_REPORT': if(['confirm','1','send'].includes(lower)) { const result=await reports.dispatch(phone,hash,data); if(result.rateLimited) await client.sendText(phone,'You\'ve filed several reports recently. Please wait a short while.'); else if(result.blocked) await client.sendText(phone,'This WhatsApp account is temporarily unable to file reports. Please contact SafeRide support if you believe this is an error.'); else { const r=result.report; await client.sendText(phone,`✅ *REPORT DISPATCHED*\n\nCase #: *${r.case_id}*\nVehicle: ${r.plate_number||r.vehicle_description}\nRoute: ${r.route_name}\nIssue: ${r.violation_type}\n\n🚓 Alerted: *${r.dispatch_target_name}*${r.distance_ahead_km ? `\n(~${r.distance_ahead_km} km ahead)` : ''}\n\nReply *STATUS ${r.case_id}* anytime.`); } await sessions.update(hash,{state:'MAIN_MENU',session_data:{}}); } else if(['edit','2'].includes(lower)) { await save(hash,session,'AWAITING_ROUTE',{}); await client.sendText(phone,'Choose or type your route again.'); } else await client.sendText(phone,'Reply *1* to Confirm & Send or *2* to edit.'); break;
-    case 'AWAITING_STATUS_LOOKUP': if(lower==='last') { const { data: last }=await require('../db/supabase').from('reports').select('*').eq('reporter_phone_hash',hash).order('reported_at',{ascending:false}).limit(1).maybeSingle(); await client.sendText(phone,last?`📋 *${last.case_id}*\nStatus: *${last.status.toUpperCase()}*`:'No reports found.'); } else await client.sendText(phone,'Reply with a case number such as SR-2026-000001.'); break;
-    default: await client.sendMainMenu(phone,mainMenu());
-  } res.status(200).end();
-} catch(error) { console.error(error); res.status(200).end(); } });
-function review(d){ return `✅ *REVIEW YOUR REPORT*\n\n📍 Location: ${d.locationLabel||'GPS shared'}\n🛣️ Route: ${d.routeName}\n🚌 Vehicle: ${d.plateNumber||d.description}\n⚠️ Issue: ${d.violationType}\n\n1. ✅ Confirm & Send\n2. ✏️ Edit details\n0. Cancel`; }
-module.exports=router;
+router.post("/webhook", validSignature, async (req, res) => {
+  try {
+    const phone = normalisePhone(req.body.From || "");
+    const hash = phoneHash(phone);
+    const rawText = (req.body.Body || "").trim();
+    const labelActions = {
+      "report this vehicle": "main_report",
+      "check report status": "main_status",
+      "how this works": "main_how",
+      "towards route end": "direction_forward",
+      "towards route start": "direction_backward",
+      "i need help now": "safety_help_now",
+      "i am safe, continue": "safety_continue",
+      "confirm & send": "confirm_send",
+      "edit details": "confirm_edit",
+      "dangerous driving": "violation_dangerous",
+      overspeeding: "violation_speeding",
+      overloading: "violation_overloading",
+      "impaired driver": "violation_impaired",
+      "unroadworthy vehicle": "violation_unroadworthy",
+      harassment: "violation_harassment",
+      "route deviation": "violation_deviation",
+      overcharging: "violation_overcharging",
+      other: "violation_other",
+    };
+    const action = (
+      req.body.ButtonPayload ||
+      (rawText.includes("_") && !rawText.includes(" ") ? rawText : "") ||
+      labelActions[rawText.toLowerCase()] ||
+      ""
+    ).toLowerCase();
+    const interactiveReplies = {
+      main_report: "1",
+      main_status: "2",
+      main_how: "3",
+      direction_forward: "1",
+      direction_backward: "2",
+      safety_help_now: "1",
+      safety_continue: "2",
+      confirm_send: "1",
+      confirm_edit: "2",
+      confirm_cancel: "0",
+      violation_dangerous: "1",
+      violation_speeding: "2",
+      violation_overloading: "3",
+      violation_impaired: "4",
+      violation_unroadworthy: "5",
+      violation_harassment: "6",
+      violation_deviation: "7",
+      violation_overcharging: "8",
+      violation_other: "9",
+      route_1: "1",
+      route_2: "2",
+      route_3: "3",
+      route_4: "4",
+    };
+    const text = interactiveReplies[action] || rawText;
+    const lower = text.toLowerCase();
+    const session = await sessions.getOrCreate(hash);
+    const data = session.session_data || {};
+    if (["999", "112", "help", "emergency", "sos", "danger"].includes(lower)) {
+      client.sendText(phone, EMERGENCY).catch(console.error);
+      return res.status(200).end();
+    }
+    const officer = text.match(
+      /^(ONROUTE|INTERCEPTED|NOTSEEN|ESCALATE)\s+(SR-\d{4}-\d{6})$/i,
+    );
+    if (officer) {
+      const report = await reports.findByCase(officer[2].toUpperCase());
+      const authorisedOfficer =
+        report && (await reports.authoriseOfficer(report, phone));
+      if (!authorisedOfficer) {
+        await client.sendText(
+          phone,
+          "This number is not authorised for that active checkpoint alert.",
+        );
+        return res.status(200).end();
+      }
+      const officerAction = officer[1].toUpperCase();
+      const result = await reports.updateOutcome(
+        report.case_id,
+        officerAction,
+        authorisedOfficer.badgeId,
+      );
+      await reports.notifyReporterOutcome(result.report, result.rerouted);
+      await client.sendText(
+        phone,
+        officerAction === "ONROUTE"
+          ? `✅ You are marked on route for *${result.report.case_id}*.`
+          : `✅ *${result.report.case_id}* has been updated to *${result.report.status.toUpperCase()}*.`,
+      );
+      return res.status(200).end();
+    }
+    const match = text.match(/(?:status\s+)?(SR-\d{4}-\d{6})/i);
+    if (match) {
+      const report = await reports.findByCase(match[1].toUpperCase());
+      const ownedBySender = report?.reporter_phone_hash === hash;
+      await client.sendText(
+        phone,
+        ownedBySender
+          ? `📋 *${report.case_id}*\n\nFiled: ${formatDateTime(report.reported_at)}\nVehicle: ${report.plate_number || report.vehicle_description}\nIssue: ${report.violation_type}\n\nStatus: *${report.status.toUpperCase()}*\nAlerted: ${report.dispatch_target_name || "Police"}`
+          : `😕 I couldn't find that report for this WhatsApp number.`,
+      );
+      return res.status(200).end();
+    }
+    if (
+      session.state === "MAIN_MENU" &&
+      rawText &&
+      !action &&
+      !["menu", "cancel", "0", "hi", "hello", "start", "report"].includes(lower)
+    ) {
+      const caseMessage =
+        await require("../services/caseMessageService").recordInboundForActiveCase(
+          hash,
+          rawText,
+          req.body.MessageSid,
+        );
+      if (caseMessage) {
+        await client.sendText(
+          phone,
+          `💬 Your message has been added to case *${caseMessage.case_id}*. A SafeRide team member will reply here.`,
+        );
+        return res.status(200).end();
+      }
+    }
+    if (["menu", "cancel", "0", "hi", "hello", "start"].includes(lower)) {
+      await sessions.update(hash, { state: "MAIN_MENU", session_data: {} });
+      await client.sendMainMenu(phone, mainMenu());
+      return res.status(200).end();
+    }
+    if (
+      req.body.Latitude &&
+      req.body.Longitude &&
+      session.state === "AWAITING_LOCATION"
+    ) {
+      const lat = Number(req.body.Latitude),
+        lng = Number(req.body.Longitude);
+      if (!isWithinUganda(lat, lng))
+        await client.sendText(
+          phone,
+          "That location is outside Uganda. Please share your current location again.",
+        );
+      else await showRoutes(phone, hash, session, lat, lng);
+      return res.status(200).end();
+    }
+    switch (session.state) {
+      case "MAIN_MENU":
+        if (lower === "1" || lower === "report") {
+          await save(hash, session, "AWAITING_LOCATION", {});
+          await client.sendText(phone, locationPrompt());
+        } else if (lower === "2" || lower === "status") {
+          await save(hash, session, "AWAITING_STATUS_LOOKUP", {});
+          await client.sendText(
+            phone,
+            "📋 *CHECK REPORT STATUS*\n\nReply with your case number, or reply *LAST*.",
+          );
+        } else if (lower === "3")
+          await client.sendText(
+            phone,
+            "❓ *HOW SAFERIDE WORKS*\n\n1. Share GPS\n2. Pick route and vehicle\n3. Select issue\n4. We alert the checkpoint ahead\n5. Track your case.\n\nReply *1* to report now.",
+          );
+        else await client.sendMainMenu(phone, mainMenu());
+        break;
+      case "AWAITING_LOCATION": {
+        const attempts = (data.locationAttempts || 0) + 1;
+        if (attempts < 3) {
+          await save(hash, session, "AWAITING_LOCATION", {
+            locationAttempts: attempts,
+          });
+          await client.sendText(
+            phone,
+            "📍 I need your *actual GPS location*. Tap 📎 → Location → Send current location.",
+          );
+        } else {
+          await save(hash, session, "AWAITING_TEXT_LOCATION", {
+            locationAttempts: attempts,
+          });
+          await client.sendText(
+            phone,
+            "Having trouble sharing location? Reply with the nearest trading center, junction, or landmark and your direction of travel.",
+          );
+        }
+        break;
+      }
+      case "AWAITING_TEXT_LOCATION":
+        await save(hash, session, "AWAITING_ROUTE", {
+          locationLabel: text,
+          locationSource: "text-fallback",
+          nearbyRoutes: [],
+        });
+        await client.sendText(phone, "Which route are you on? Type its name.");
+        break;
+      case "AWAITING_ROUTE": {
+        const options = data.nearbyRoutes || [];
+        const selected = options[Number(text) - 1];
+        if (action === "route_4" && options.length < 4) {
+          await client.sendText(phone, "Please type the route name.");
+        } else if (selected) {
+          await save(hash, session, "AWAITING_DIRECTION", {
+            routeId: selected.route_id,
+            routeName: selected.name,
+          });
+          await client.sendDirectionMenu(
+            phone,
+            "🧭 Which way are you heading?\n\n1. Towards Jinja / route end\n2. Towards Kampala / route start",
+          );
+        } else if (text.length > 2) {
+          await save(hash, session, "AWAITING_DIRECTION", {
+            routeName: text,
+            routeId: null,
+          });
+          await client.sendDirectionMenu(
+            phone,
+            "🧭 Which way are you heading?\n\n1. Towards route end\n2. Towards route start",
+          );
+        } else
+          await client.sendText(
+            phone,
+            "Please choose a route number or type its name.",
+          );
+        break;
+      }
+      case "AWAITING_DIRECTION":
+        if (text === "1" || text === "2") {
+          await save(hash, session, "AWAITING_PLATE", {
+            direction: text === "1" ? "eastbound" : "westbound",
+          });
+          await client.sendText(
+            phone,
+            "🚌 *WHICH VEHICLE ARE YOU IN?*\n\nType the plate, e.g. *UBH 123K*.\n\nCan't see it? Reply *SKIP*.",
+          );
+        } else await client.sendText(phone, "Reply *1* or *2*.");
+        break;
+      case "AWAITING_PLATE":
+        if (lower === "skip") {
+          await save(hash, session, "AWAITING_DESCRIPTION", {});
+          await client.sendText(
+            phone,
+            "Describe the vehicle: colour, type, sticker, sacco, or damage.",
+          );
+        } else {
+          const plate = validatePlate(text);
+          if (!plate)
+            await client.sendText(
+              phone,
+              "That does not look like a Uganda plate (e.g. UBH 123K). Try again or reply *SKIP*.",
+            );
+          else {
+            await save(hash, session, "AWAITING_VIOLATION", {
+              plateNumber: plate,
+            });
+            await client.sendViolationMenu(phone, violationPrompt());
+          }
+        }
+        break;
+      case "AWAITING_DESCRIPTION":
+        await save(hash, session, "AWAITING_VIOLATION", { description: text });
+        await client.sendViolationMenu(phone, violationPrompt());
+        break;
+      case "AWAITING_VIOLATION": {
+        const issue = violations[Number(text) - 1];
+        if (!issue)
+          await client.sendText(
+            phone,
+            "Sorry, please pick a number from the list.",
+          );
+        else if (HIGH_RISK.has(issue)) {
+          await save(hash, session, "EMERGENCY_CHECK", {
+            violationType: issue,
+          });
+          await client.sendEmergencyCheck(
+            phone,
+            issue,
+            `⚠️ *ARE YOU SAFE RIGHT NOW?*\n\nYou selected: ${issue}.\n\n1. 🚨 I need help NOW\n2. ✅ I\'m safe, continue report`,
+          );
+        } else {
+          await save(hash, session, "AWAITING_MEDIA_OPTIONAL", {
+            violationType: issue,
+          });
+          await client.sendText(
+            phone,
+            "📷 *OPTIONAL: Add a photo?*\n\nSend one photo if safe, or reply *SKIP*.",
+          );
+        }
+        break;
+      }
+      case "EMERGENCY_CHECK":
+        if (text === "1") {
+          const result = await reports.dispatch(phone, hash, data, "Escalated");
+          await client.sendText(
+            phone,
+            result.rateLimited
+              ? "Please wait before filing another report."
+              : result.blocked
+                ? "This WhatsApp account is temporarily unable to file reports. Please contact SafeRide support if you believe this is an error."
+                : `📞 Call *999* or *112* immediately.\n\nYour report is being dispatched. Case: *${result.report.case_id}*`,
+          );
+        } else if (text === "2") {
+          await save(hash, session, "CONFIRM_REPORT", {});
+          await client.sendConfirmReport(phone, data, review(data));
+        } else
+          await client.sendText(
+            phone,
+            "Reply *1* for help now or *2* to continue.",
+          );
+        break;
+      case "AWAITING_MEDIA_OPTIONAL":
+        await save(hash, session, "CONFIRM_REPORT", {
+          mediaUrl: req.body.MediaUrl0 || null,
+        });
+        await client.sendConfirmReport(
+          phone,
+          { ...data, mediaUrl: req.body.MediaUrl0 || null },
+          review({ ...data, mediaUrl: req.body.MediaUrl0 || null }),
+        );
+        break;
+      case "CONFIRM_REPORT":
+        if (["confirm", "1", "send"].includes(lower)) {
+          const result = await reports.dispatch(phone, hash, data);
+          if (result.rateLimited)
+            await client.sendText(
+              phone,
+              "You've filed several reports recently. Please wait a short while.",
+            );
+          else if (result.blocked)
+            await client.sendText(
+              phone,
+              "This WhatsApp account is temporarily unable to file reports. Please contact SafeRide support if you believe this is an error.",
+            );
+          else {
+            const r = result.report;
+            await client.sendText(
+              phone,
+              `✅ *REPORT DISPATCHED*\n\nCase #: *${r.case_id}*\nVehicle: ${r.plate_number || r.vehicle_description}\nRoute: ${r.route_name}\nIssue: ${r.violation_type}\n\n🚓 Alerted: *${r.dispatch_target_name}*${r.distance_ahead_km ? `\n(~${r.distance_ahead_km} km ahead)` : ""}\n\nReply *STATUS ${r.case_id}* anytime.`,
+            );
+          }
+          await sessions.update(hash, { state: "MAIN_MENU", session_data: {} });
+        } else if (["edit", "2"].includes(lower)) {
+          await save(hash, session, "AWAITING_ROUTE", {});
+          await client.sendText(phone, "Choose or type your route again.");
+        } else
+          await client.sendText(
+            phone,
+            "Reply *1* to Confirm & Send or *2* to edit.",
+          );
+        break;
+      case "AWAITING_STATUS_LOOKUP":
+        if (lower === "last") {
+          const { data: last } = await require("../db/supabase")
+            .from("reports")
+            .select("*")
+            .eq("reporter_phone_hash", hash)
+            .order("reported_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          await client.sendText(
+            phone,
+            last
+              ? `📋 *${last.case_id}*\nStatus: *${last.status.toUpperCase()}*`
+              : "No reports found.",
+          );
+        } else
+          await client.sendText(
+            phone,
+            "Reply with a case number such as SR-2026-000001.",
+          );
+        break;
+      default:
+        await client.sendMainMenu(phone, mainMenu());
+    }
+    res.status(200).end();
+  } catch (error) {
+    console.error(error);
+    res.status(200).end();
+  }
+});
+function review(d) {
+  return `✅ *REVIEW YOUR REPORT*\n\n📍 Location: ${d.locationLabel || "GPS shared"}\n🛣️ Route: ${d.routeName}\n🚌 Vehicle: ${d.plateNumber || d.description}\n⚠️ Issue: ${d.violationType}\n\n1. ✅ Confirm & Send\n2. ✏️ Edit details\n0. Cancel`;
+}
+module.exports = router;

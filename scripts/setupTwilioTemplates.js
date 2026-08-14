@@ -6,10 +6,19 @@ const twilio = require('twilio');
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 async function list(name, body, button, items) { const template = await client.content.v1.contents.create({ friendlyName: name, language: 'en', types: { 'twilio/list-picker': { body, button, items: items.map(item => ({ id: item.id, item: item.label, ...(item.description ? { description: item.description } : {}) })) } } }); console.log(`${name}: ${template.sid}`); return template.sid; }
 async function replies(name, body, actions) { const template = await client.content.v1.contents.create({ friendlyName: name, language: 'en', types: { 'twilio/quick-reply': { body, actions: actions.map(action => ({ id: action.id, title: action.title })) } } }); console.log(`${name}: ${template.sid}`); return template.sid; }
+function routePickerContent() { return { friendlyName: 'SafeRide Route Picker', language: 'en', types: { 'twilio/list-picker': { body: '📍 *WHICH ROUTE ARE YOU ON?*\n\nSelect the route that matches your journey, or type another route name.', button: 'Choose route', items: [{ id: 'route_1', item: '{{1}}', description: '{{5}}' }, { id: 'route_2', item: '{{2}}', description: '{{6}}' }, { id: 'route_3', item: '{{3}}', description: '{{7}}' }, { id: 'route_4', item: '{{4}}', description: '{{8}}' }] } } }; }
 async function main() {
   if (process.argv[2] === 'route-picker') {
-    const routePicker = await list('SafeRide Route Picker', '📍 *WHICH ROUTE ARE YOU ON?*\n\n1. {{1}}\n2. {{2}}\n3. {{3}}\n4. {{4}}\n\nChoose a route below, or type another route name.', 'Choose route', [{ id: 'route_1', label: 'Route 1' }, { id: 'route_2', label: 'Route 2' }, { id: 'route_3', label: 'Route 3' }, { id: 'route_4', label: 'Route 4' }]);
-    console.log(`\nAdd this value to Vercel or .env:\nTWILIO_TPL_ROUTE_PICKER=${routePicker}`);
+    const template = await client.content.v1.contents.create(routePickerContent());
+    console.log(`SafeRide Route Picker: ${template.sid}`);
+    console.log(`\nAdd this value to Vercel or .env:\nTWILIO_TPL_ROUTE_PICKER=${template.sid}`);
+    return;
+  }
+  if (process.argv[2] === 'update-route-picker') {
+    const sid = process.env.TWILIO_TPL_ROUTE_PICKER;
+    if (!sid) throw new Error('TWILIO_TPL_ROUTE_PICKER must contain the existing route-picker SID.');
+    await client.content.v1.contents(sid).update(routePickerContent());
+    console.log(`SafeRide Route Picker updated: ${sid}`);
     return;
   }
   if (process.argv[2] === 'officer-alert') {
