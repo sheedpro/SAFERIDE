@@ -96,9 +96,11 @@ router.post('/cases/:caseId/messages', requirePermission('police:write'), async 
 
 router.get('/routes', async (_req, res, next) => {
   try {
-    const { data, error } = await supabase.from('routes').select('route_id, name, polyline, is_active').eq('is_active', true).order('name');
+    const [{ data, error }, { data: geometries, error: geometryError }] = await Promise.all([supabase.from('routes').select('route_id, name, polyline, is_active').eq('is_active', true).order('name'), supabase.rpc('saferide_route_geometries')]);
     if (error) throw error;
-    res.json(data || []);
+    if (geometryError) throw geometryError;
+    const geometryByRoute = new Map((geometries || []).map(item => [item.route_id, item.map_polyline]));
+    res.json((data || []).map(route => ({ ...route, map_polyline: geometryByRoute.get(route.route_id) || null })));
   } catch (error) { next(error); }
 });
 router.get('/stations', async (_req, res, next) => { try { const { data, error } = await supabase.from('stations').select('station_id,name,whatsapp,phone_number,location,is_active').eq('is_active', true).order('name'); if (error) throw error; res.json(data || []); } catch (error) { next(error); } });
