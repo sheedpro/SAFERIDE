@@ -125,12 +125,12 @@ router.patch('/cases/:caseId/outcome', requirePermission('police:write'), async 
     const before = await supabase.from('reports').select('*').eq('case_id', req.params.caseId).maybeSingle();
     if (before.error) throw before.error;
     if (!before.data) return res.status(404).json({ error: 'Case not found' });
-    const result = await updateOutcome(req.params.caseId, action, req.body.badgeId || req.admin.email);
+    const result = await updateOutcome(req.params.caseId, action, req.body.badgeId || req.admin.email, { reason });
     await notifyReporterOutcome(result.report, result.rerouted);
     await record(req.admin, `police-${action.toLowerCase()}`, 'report', result.report.case_id, {
       before: cleanCase(before.data), after: cleanCase(result.report), reason,
     });
-    res.json({ case: cleanCase(result.report), rerouted: result.rerouted });
+    res.json({ case: cleanCase(result.report), rerouted: result.rerouted, escalationAttempts: result.escalationAttempts || [] });
   } catch (error) { next(error); }
 });
 

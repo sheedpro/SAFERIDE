@@ -42,12 +42,13 @@ async function dispatch(phone, hash, draft, status = 'Dispatched') {
   const caseId = nextCaseId(seq); let mediaPath = null; try { mediaPath = await storeMedia(draft.mediaUrl, caseId); } catch (error) { console.error(`Media storage failed for ${caseId}:`, error.message); } const report = { case_id: caseId, reporter_phone_hash: hash, reporter_phone_raw: phone, location: draft.location ? `POINT(${draft.location.lng} ${draft.location.lat})` : null, reporter_lat: draft.location?.lat || null, reporter_lng: draft.location?.lng || null, intercept_lat: target.targetLocation?.lat || null, intercept_lng: target.targetLocation?.lng || null, location_source: draft.locationSource || 'text-fallback', location_label: draft.locationLabel, route_id: draft.routeId || null, route_name: draft.routeName || 'Route not mapped', direction_of_travel: draft.direction || null, plate_number: draft.plateNumber || null, plate_confidence: draft.plateNumber ? 'confirmed' : 'unconfirmed', vehicle_description: draft.description || null, violation_type: draft.violationType, violation_detail: draft.violationDetail || null, media_url: mediaPath, dispatched_checkpoint_id: target.target?.checkpoint_id || null, dispatch_target_name: target.target?.name || 'Nearest police station', distance_ahead_km: target.distanceAheadKm || null, estimated_eta_minutes: target.etaMinutes || null, dispatch_priority: highWatch ? 'HIGH' : 'STANDARD', vehicle_watch_status: highWatch ? 'HIGH' : 'STANDARD', vehicle_watch_reason: highWatch ? 'Automatic repeat-offender threshold reached' : null, status };
   report.reported_at = reportedAt; report.predicted_lat = target.predictedLocation?.lat || null; report.predicted_lng = target.predictedLocation?.lng || null; report.prediction_confidence = target.predictionConfidence || 'LOW';
   const { error } = await supabase.from('reports').insert(report); if (error) throw error;
+  const escalationAttempts = status === 'Escalated' ? await notifyEscalation(report, 'Emergency report requires command-centre attention') : [];
   if (target.type === 'checkpoint') for (const officer of target.target.duty_officers.filter(x => x.onDuty)) await twilio.sendOfficerAlert(officer.whatsapp, report);
   if (process.env.POLICECONNECT_API_URL) {
     try { await fetch(`${process.env.POLICECONNECT_API_URL}/saferide-reports`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.POLICECONNECT_SERVICE_TOKEN}` }, body: JSON.stringify({ caseId, location: draft.location, routeName: report.route_name, directionOfTravel: report.direction_of_travel, vehicle: { plateNumber: report.plate_number, description: report.vehicle_description }, violationType: report.violation_type, dispatchedCheckpointId: report.dispatched_checkpoint_id, interceptLocation: target.targetLocation, priority: report.dispatch_priority }) }); }
     catch (error) { console.error(`PoliceConnect notification failed for ${caseId}:`, error.message); }
   }
-  return { report, target };
+  return { report, target, escalationAttempts };
 }
 async function findByCase(caseId) { const { data, error } = await supabase.from('reports').select('*').eq('case_id', caseId).maybeSingle(); if (error) throw error; return data; }
 async function authoriseOfficer(report, phone) {
@@ -60,25 +61,79 @@ async function notifyReporterOutcome(report, rerouted = false) {
   const text = rerouted ? `📋 *${report.case_id}*\n\nThe first checkpoint did not see the vehicle. Police have alerted the next interception point ahead on the route.` : report.status === 'Acknowledged' ? `📋 *${report.case_id}*\n\nAn officer has acknowledged the alert and is on route to the interception point.` : `📋 *${report.case_id}*\n\nStatus: *${report.status.toUpperCase()}*. Thank you for helping keep the roads safe.`;
   return twilio.sendText(report.reporter_phone_raw, text);
 }
+function escalationRecipients(settings) {
+  const configured = Array.isArray(settings.escalation_whatsapp_recipients) ? settings.escalation_whatsapp_recipients : [];
+  const fallback = (process.env.ESCALATION_WHATSAPP_RECIPIENTS || '').split(',');
+  return [...new Set([...configured, ...fallback].map(normalisePhone).filter(Boolean))];
+}
+async function notifyEscalation(report, reason) {
+  const settings = await getSettings(); const recipients = escalationRecipients(settings);
+  const attempts = [];
+  for (const recipient of recipients) {
+    try { const message = await twilio.sendEscalationAlert(recipient, report, reason); attempts.push({ at: new Date().toISOString(), channel: 'whatsapp', recipient, success: true, messageSid: message.sid }); }
+    catch (error) { console.error(`Escalation WhatsApp delivery failed for ${report.case_id}:`, error.message); attempts.push({ at: new Date().toISOString(), channel: 'whatsapp', recipient, success: false, error: error.message }); }
+  }
+  if (process.env.POLICECONNECT_ESCALATION_URL) {
+    try { const response = await fetch(process.env.POLICECONNECT_ESCALATION_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.POLICECONNECT_SERVICE_TOKEN || ''}` }, body: JSON.stringify({ caseId: report.case_id, status: report.status, routeName: report.route_name, dispatchedCheckpointId: report.dispatched_checkpoint_id, priority: report.dispatch_priority, reason }) }); if (!response.ok) throw new Error(`HTTP ${response.status}`); attempts.push({ at: new Date().toISOString(), channel: 'policeconnect', success: true }); }
+    catch (error) { console.error(`PoliceConnect escalation failed for ${report.case_id}:`, error.message); attempts.push({ at: new Date().toISOString(), channel: 'policeconnect', success: false, error: error.message }); }
+  }
+  if (attempts.length) { const { error } = await supabase.from('reports').update({ escalation_notification_attempts: [...(report.escalation_notification_attempts || []), ...attempts] }).eq('case_id', report.case_id); if (error) throw error; }
+  return attempts;
+}
 function draftFromReport(report) { return { location: report.reporter_lat == null ? null : { lat: report.reporter_lat, lng: report.reporter_lng }, locationSource: report.location_source, routeId: report.route_id, routeName: report.route_name, direction: report.direction_of_travel }; }
-async function updateOutcome(caseId, action, badgeId) {
+async function updateOutcome(caseId, action, badgeId, options = {}) {
   const report = await findByCase(caseId); if (!report) throw new Error(`Report ${caseId} not found`);
+  if (['Intercepted', 'Closed', 'Rejected'].includes(report.status)) throw new Error(`Report ${caseId} is already closed`);
   if (action === 'NOTSEEN') return rerouteAfterNotSeen(report, badgeId);
   const status = action === 'ONROUTE' ? 'Acknowledged' : action === 'INTERCEPTED' ? 'Intercepted' : 'Escalated';
   const { data, error } = await supabase.from('reports').update({ status, officer_action: action, officer_action_at: new Date().toISOString(), officer_badge_id: badgeId || null }).eq('case_id', caseId).select().single(); if (error) throw error;
-  return { report: data, rerouted: false };
+  const escalationAttempts = action === 'ESCALATE' ? await notifyEscalation(data, options.reason || 'Operational escalation requested') : [];
+  return { report: data, rerouted: false, escalationAttempts };
 }
 async function rerouteAfterNotSeen(report, badgeId) {
   const attempts = [...(report.interception_attempts || []), { checkpointId: report.dispatched_checkpoint_id, checkpointName: report.dispatch_target_name, outcome: 'NOTSEEN', at: new Date().toISOString(), badgeId: badgeId || null }];
   const excluded = attempts.map(attempt => attempt.checkpointId).filter(Boolean);
   const target = await selectTarget(draftFromReport(report), { reportedAt: report.reported_at, excludedCheckpointIds: excluded });
   if (target.type !== 'checkpoint') {
-    const { data, error } = await supabase.from('reports').update({ status: 'NotSeen', officer_action: 'NOTSEEN', officer_action_at: new Date().toISOString(), officer_badge_id: badgeId || null, interception_attempts: attempts }).eq('case_id', report.case_id).select().single(); if (error) throw error;
-    return { report: data, rerouted: false };
+    const { data, error } = await supabase.from('reports').update({ status: 'Escalated', officer_action: 'NOTSEEN', officer_action_at: new Date().toISOString(), officer_badge_id: badgeId || null, interception_attempts: attempts, auto_escalated_at: new Date().toISOString() }).eq('case_id', report.case_id).select().single(); if (error) throw error;
+    const escalationAttempts = await notifyEscalation(data, 'No eligible checkpoint remains ahead on the route after a not-seen outcome');
+    return { report: data, rerouted: false, escalationAttempts };
   }
   const changes = { status: 'Dispatched', officer_action: 'NOTSEEN', officer_action_at: new Date().toISOString(), officer_badge_id: badgeId || null, interception_attempts: attempts, redispatch_count: (report.redispatch_count || 0) + 1, dispatched_checkpoint_id: target.target.checkpoint_id, dispatch_target_name: target.target.name, distance_ahead_km: target.distanceAheadKm, estimated_eta_minutes: target.etaMinutes, intercept_lat: target.targetLocation.lat, intercept_lng: target.targetLocation.lng, predicted_lat: target.predictedLocation.lat, predicted_lng: target.predictedLocation.lng, prediction_confidence: target.predictionConfidence };
   const { data, error } = await supabase.from('reports').update(changes).eq('case_id', report.case_id).select().single(); if (error) throw error;
   for (const officer of target.target.duty_officers.filter(item => item.onDuty)) await twilio.sendOfficerAlert(officer.whatsapp, data);
   return { report: data, rerouted: true };
 }
-module.exports = { dispatch, findByCase, updateOutcome, authoriseOfficer, notifyReporterOutcome };
+async function onDutyOfficers(report) {
+  if (!report.dispatched_checkpoint_id) return [];
+  const { data, error } = await supabase.from('checkpoints').select('duty_officers').eq('checkpoint_id', report.dispatched_checkpoint_id).maybeSingle();
+  if (error) throw error;
+  return (data?.duty_officers || []).filter(item => item.onDuty && item.whatsapp);
+}
+async function runOperationalSweep() {
+  const settings = await getSettings(); const now = Date.now();
+  const { data: reports, error } = await supabase.from('reports').select('*').in('status', ['Dispatched', 'Acknowledged']).order('reported_at').limit(200);
+  if (error) throw error;
+  const result = { escalated: [], reminders: [], skipped: [] };
+  for (const report of reports || []) {
+    if (report.status === 'Dispatched' && now - new Date(report.reported_at).getTime() >= settings.dispatch_ack_timeout_minutes * 60_000) {
+      const outcome = await updateOutcome(report.case_id, 'ESCALATE', 'SYSTEM', { reason: `No checkpoint acknowledgement within ${settings.dispatch_ack_timeout_minutes} minutes` });
+      await supabase.from('reports').update({ auto_escalated_at: new Date().toISOString() }).eq('case_id', report.case_id);
+      await notifyReporterOutcome(outcome.report); result.escalated.push(report.case_id); continue;
+    }
+    if (report.status !== 'Acknowledged') continue;
+    const acknowledgedAt = new Date(report.officer_action_at || report.reported_at).getTime();
+    if (now - acknowledgedAt >= settings.acknowledged_escalation_minutes * 60_000) {
+      const outcome = await updateOutcome(report.case_id, 'ESCALATE', 'SYSTEM', { reason: `No final officer outcome within ${settings.acknowledged_escalation_minutes} minutes after acknowledgement` });
+      await supabase.from('reports').update({ auto_escalated_at: new Date().toISOString() }).eq('case_id', report.case_id);
+      await notifyReporterOutcome(outcome.report); result.escalated.push(report.case_id); continue;
+    }
+    if (!report.officer_reminder_sent_at && now - acknowledgedAt >= settings.acknowledged_reminder_minutes * 60_000) {
+      const officers = await onDutyOfficers(report); await Promise.allSettled(officers.map(officer => twilio.sendOutcomeReminder(officer.whatsapp, report)));
+      await supabase.from('reports').update({ officer_reminder_sent_at: new Date().toISOString() }).eq('case_id', report.case_id);
+      result.reminders.push(report.case_id);
+    }
+  }
+  return result;
+}
+module.exports = { dispatch, findByCase, updateOutcome, authoriseOfficer, notifyReporterOutcome, notifyEscalation, runOperationalSweep };
